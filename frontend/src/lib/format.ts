@@ -1,4 +1,21 @@
-import { formatUnits } from "ethers";
+import { Interface, formatUnits } from "ethers";
+import { EXCHANGE_ABI } from "../config";
+
+const exchangeInterface = new Interface(EXCHANGE_ABI);
+
+/** Name of the exchange's custom error in a revert, whichever way the RPC nested the data. */
+function revertName(e: unknown): string | undefined {
+  const err = e as { data?: unknown; info?: { error?: { data?: unknown } }; error?: { data?: unknown } };
+  const nested = (x: unknown) => (x && typeof x === "object" ? (x as { data?: unknown }).data : x);
+  for (const data of [err?.data, nested(err?.data), err?.info?.error?.data, nested(err?.info?.error?.data), err?.error?.data]) {
+    if (typeof data !== "string" || !data.startsWith("0x") || data.length < 10) continue;
+    try {
+      const parsed = exchangeInterface.parseError(data);
+      if (parsed) return parsed.name;
+    } catch {}
+  }
+  return undefined;
+}
 
 export const WAD = 10n ** 18n;
 
@@ -47,6 +64,8 @@ export function parseWad(input: string, decimals = 18): bigint {
 }
 
 export function errorMessage(e: unknown): string {
+  const name = revertName(e);
+  if (name) return name;
   const err = e as { shortMessage?: string; reason?: string; message?: string; info?: { error?: { message?: string } } };
   const msg = err?.shortMessage || err?.reason || err?.info?.error?.message || err?.message || String(e);
   return msg.replace(/^execution reverted: ?/, "").slice(0, 200);

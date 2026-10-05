@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Contract, type Provider } from "ethers";
 import { deployment, ERC20_ABI, EXCHANGE_ABI } from "../config";
+import { getLivePrices } from "../lib/oracle";
 
 export interface MarketParams {
   maxLeverage: bigint;
@@ -92,6 +93,24 @@ export interface AccountData {
 export type PriceHistory = Record<number, { t: number; p: number }[]>;
 
 const POLL_MS = 2500;
+const WAD = 10n ** 18n;
+const abs = (x: bigint) => (x < 0n ? -x : x);
+
+/** Re-marks a position at `price` (mirrors PerpExchange.getPosition). */
+function remark(p: Position, price: bigint, mm: bigint): Position {
+  const unrealizedPnl = (p.size * (price - p.entryPrice)) / WAD;
+  const equity = p.margin + unrealizedPnl - p.accruedFunding;
+  const notional = (abs(p.size) * price) / WAD;
+  return {
+    ...p,
+    markPrice: price,
+    unrealizedPnl,
+    equity,
+    notional,
+    leverage: equity > 0n ? (notional * WAD) / equity : 2n ** 256n - 1n,
+    liquidatable: equity < (notional * mm) / WAD,
+  };
+}
 const HISTORY_LEN = 240;
 
 // ethers Results are array-like proxies; copy the fields we need into plain objects.
@@ -170,7 +189,9 @@ export function useExchangeData(provider: Provider, account?: string) {
   const [error, setError] = useState<string>();
   const [history, setHistory] = useState<PriceHistory>({});
   // Chain clock minus wall clock (seconds). Order delays and oracle ages are judged on chain time.
-  const [clockOffset, setClockOffset] = useState(0);
+  // Keep the largest offset seen: an idle chain's latest block is old, but the next block's
+  // timestamp is never earlier than our most-ahead observation, so time keeps advancing.
+  const [clockOffset, setClockOffset] = useState<number>();
   const accountRef = useRef(account);
   accountRef.current = account;
 
@@ -187,10 +208,25 @@ export function useExchangeData(provider: Provider, account?: string) {
         exchange.orderConfig(),
         provider.getBlock("latest"),
       ]);
-      if (block) setClockOffset(block.timestamp - Date.now() / 1000);
+      if (block) {
+        const observed = block.timestamp - Date.now() / 1000;
+        setClockOffset((prev) => (prev === undefined ? observed : Math.max(prev, observed)));
+      }
       const oc = rawOrderCfg as Row;
       setOrderConfig({ minDelay: Number(oc.minDelay), maxDelay: Number(oc.maxDelay), keeperFee: oc.keeperFee as bigint });
-      const ms = (rawMarkets as Row[]).map(mapMarket);
+      let ms = (rawMarkets as Row[]).map(mapMarket);
+      // Pull oracles only update on-chain when someone submits a price, so show Pyth's live
+      // price (and judge open/closed by it) whenever it's newer than the on-chain one.
+      const live = await getLivePrices(ms.map((m) => m.feedId)).catch(() => new Map());
+      const maxAge = Number((rawRisk as Row).maxPriceAge);
+      const chainTime = block?.timestamp ?? Math.floor(Date.now() / 1000);
+      if (live.size) {
+        ms = ms.map((m) => {
+          const lp = live.get(m.feedId.toLowerCase());
+          if (!lp || lp.publishTime <= m.publishTime) return m;
+          return { ...m, price: lp.price, publishTime: lp.publishTime, priceFresh: lp.publishTime + maxAge >= chainTime };
+        });
+      }
       setMarkets(ms);
       setVault({ balance: vaultBalance, nav, totalShares, totalSkewNotional: skew });
       const r = rawRisk as Row;
@@ -235,7 +271,12 @@ export function useExchangeData(provider: Provider, account?: string) {
             allowance,
             lpShares,
             lpUnlockTime: Number(lpUnlockTime),
-            positions: (positions as Row[]).map(mapPosition),
+            positions: (positions as Row[]).map(mapPosition).map((p) => {
+              const m = ms.find((x) => x.id === p.marketId);
+              return m && live.has(m.feedId.toLowerCase()) && m.price !== p.markPrice
+                ? remark(p, m.price, m.params.maintenanceMargin)
+                : p;
+            }),
             orders: (orders as Row[]).map(mapOrder),
           });
         }
@@ -261,7 +302,7 @@ export function useExchangeData(provider: Provider, account?: string) {
   // Never let the estimate step backwards (a poll can return a stale block), or "ready" UI flickers.
   const lastNow = useRef(0);
   const chainNow = useCallback(() => {
-    lastNow.current = Math.max(lastNow.current, Math.floor(Date.now() / 1000 + clockOffset));
+    lastNow.current = Math.max(lastNow.current, Math.floor(Date.now() / 1000 + (clockOffset ?? 0)));
     return lastNow.current;
   }, [clockOffset]);
 

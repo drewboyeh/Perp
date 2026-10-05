@@ -8,12 +8,15 @@ export interface Deployment {
   collateral: string;
   oracle: string;
   oracleType: OracleType;
+  /** Collateral is a test token with an open faucet. */
+  faucet?: boolean;
   startBlock: number;
 }
 
 export const CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID ?? 31337);
 export const RPC_URL: string = import.meta.env.VITE_RPC_URL ?? "http://127.0.0.1:8545";
 export const HERMES_URL: string = import.meta.env.VITE_HERMES_URL ?? "https://hermes.pyth.network";
+export const EXPLORER_URL: string | undefined = import.meta.env.VITE_EXPLORER_URL;
 export const CHAIN_NAME: string = import.meta.env.VITE_CHAIN_NAME ?? (CHAIN_ID === 31337 ? "Localhost" : `Chain ${CHAIN_ID}`);
 
 export const deployment: Deployment | undefined = (deployments as Record<string, Deployment>)[String(CHAIN_ID)];

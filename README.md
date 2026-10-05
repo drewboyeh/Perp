@@ -107,28 +107,51 @@ In your wallet, add network `http://127.0.0.1:8545` (chain id 31337) and import 
 
 To list a new stock in dev mode, click **+ List a stock**, enter a ticker and a starting price. The feeder picks it up automatically.
 
-## Deploying with real stock prices (Pyth)
+## Deploying to Base Sepolia (testnet, real Pyth prices)
 
-[Pyth](https://pyth.network) publishes US equity feeds (e.g. `Equity.US.AAPL/USD`) on most EVM chains.
+The testnet deployment uses live [Pyth](https://pyth.network) US equity prices (e.g. `Equity.US.AAPL/USD`) and a faucet test-USDC as collateral, so anyone can fund themselves.
+
+**Prerequisites**
+- A **fresh, throwaway** deployer key funded with a little Base Sepolia ETH (0.05 is plenty) from any Base Sepolia faucet. It becomes the contracts' owner.
+- Network access to `sepolia.base.org` (or set `BASE_SEPOLIA_RPC_URL`) and `hermes.pyth.network`.
 
 ```bash
-export RPC_URL=https://...               # target chain
-export DEPLOYER_PRIVATE_KEY=0x...
-export ORACLE=pyth
-export PYTH_ADDRESS=0x...                # Pyth contract on that chain (see Pyth docs)
-export COLLATERAL_ADDRESS=0x...          # USDC on that chain
-npx hardhat run scripts/deploy.js --network custom
-npx hardhat run scripts/keeper.js --network custom    # run a keeper
+export DEPLOYER_PRIVATE_KEY=0x...        # never commit this
+npm run deploy:base-sepolia
 ```
 
-Then build the UI for that chain:
+The script:
+- checks the Base Sepolia Pyth contract on-chain;
+- deploys `MockUSDC` (faucet), `PythOracle` and `PerpExchange`;
+- seeds the vault with 2,000,000 test USDC;
+- lists 10 stocks from Pyth feeds;
+- writes the addresses to `frontend/src/config/deployments.json`. Commit that file so the UI knows the deployment.
+
+Listing needs a fresh price, so stocks only list during US market hours (9:30–16:00 ET, Mon–Fri); closed ones are skipped. Re-run later to list them; this is safe to repeat:
+
+```bash
+npm run list-markets:base-sepolia                    # or TICKERS=COIN,PLTR npm run list-markets:base-sepolia
+```
+
+**Keeper.** Run it on any always-on machine with a funded key. It fills orders (earning keeper fees), cancels expired ones, liquidates, and pushes fresh Pyth prices on-chain every 30s while markets trade (Pyth is a pull oracle, so on-chain prices otherwise go stale):
+
+```bash
+npm run keeper:base-sepolia
+```
+
+Without a keeper the app still works: it shows live prices straight from Pyth, and traders can execute their own orders from **Pending orders**.
+
+**Frontend.**
 
 ```bash
 cd frontend
-VITE_CHAIN_ID=<id> VITE_RPC_URL=<public rpc> VITE_CHAIN_NAME="<name>" npm run build
+npm run dev:base-sepolia      # local dev against Base Sepolia
+npm run build:base-sepolia    # static build in frontend/dist, host anywhere
 ```
 
-With Pyth, **+ List a stock** searches Hermes for equity feeds, so any stock Pyth covers can be listed. Users need a little native gas token for the oracle update fee.
+Settings live in `frontend/.env.base-sepolia`.
+
+**Other chains / real USDC.** Set `PYTH_ADDRESS` (see Pyth's contract-address docs) and optionally `COLLATERAL_ADDRESS` (e.g. real USDC, which turns off the faucet and the vault seeding). Then run `npx hardhat run scripts/deploy.js --network custom` with `RPC_URL` set. In the UI, **+ List a stock** searches Pyth for any covered equity.
 
 ## Tests
 

@@ -2,19 +2,23 @@
 //  - Executes committed orders once their delay has passed and a newer oracle price exists.
 //  - Cancels orders that expired unexecuted.
 //  - Liquidates positions below maintenance margin.
+//  - Pyth deployments: pushes fresh prices on-chain while markets trade, so vault NAV,
+//    liquidation checks and the UI never sit on stale prices (Pyth is a pull oracle).
 const hre = require("hardhat");
 const { readDeployment } = require("./lib/deployments");
-const { getPythUpdateData } = require("./lib/hermes");
+const { getPythUpdateData, getPythLatest } = require("./lib/hermes");
 
 const { ethers } = hre;
 const INTERVAL_MS = Number(process.env.KEEPER_INTERVAL_MS || 1000);
+const PUSH_INTERVAL_MS = Number(process.env.PRICE_PUSH_INTERVAL_MS || 30_000);
+const PUSH_MIN_AGE_S = 20; // only push a feed whose on-chain price is at least this much older
 
 async function main() {
   const [signer] = await ethers.getSigners();
   const { chainId } = await ethers.provider.getNetwork();
   const d = readDeployment(chainId);
   const exchange = await ethers.getContractAt("PerpExchange", d.exchange, signer);
-  const oracle = await ethers.getContractAt("IPriceOracle", d.oracle);
+  const oracle = await ethers.getContractAt("IPriceOracle", d.oracle, signer);
   console.log(`Keeper ${signer.address} watching ${d.exchange}`);
 
   const positions = new Set(); // `${marketId}:${trader}` with open positions
@@ -105,6 +109,24 @@ async function main() {
     }
   }
 
+  let lastPush = 0;
+  async function pushPrices() {
+    if (d.oracleType !== "pyth" || Date.now() - lastPush < PUSH_INTERVAL_MS) return;
+    lastPush = Date.now();
+    const markets = await exchange.getMarkets();
+    if (markets.length === 0) return;
+    const latest = await getPythLatest(markets.map((m) => m.feedId));
+    // Push only when Hermes has something meaningfully newer than what's on-chain (e.g. not
+    // while the market is closed and the feed has stopped publishing).
+    const stale = markets.filter(
+      (m) => (latest.publishTimes.get(m.feedId.toLowerCase()) ?? 0) >= Number(m.publishTime) + PUSH_MIN_AGE_S,
+    );
+    if (stale.length === 0) return;
+    const value = await exchange.getOracleUpdateFee(latest.data);
+    const rc = await send("price push", () => oracle.updatePrices(latest.data, { value }));
+    if (rc) console.log(`Pushed prices for ${stale.map((m) => m.symbol).join(", ")}`);
+  }
+
   async function processLiquidations() {
     for (const key of positions) {
       const [marketId, trader] = key.split(":");
@@ -129,6 +151,7 @@ async function main() {
   for (;;) {
     try {
       await syncEvents();
+      await pushPrices();
       await processOrders();
       await processLiquidations();
     } catch (e) {
