@@ -42,6 +42,25 @@ export interface Position {
   liquidatable: boolean;
 }
 
+export interface PendingOrder {
+  marketId: number;
+  symbol: string;
+  sizeDelta: bigint;
+  marginDelta: bigint;
+  acceptablePrice: bigint;
+  keeperFee: bigint;
+  commitTime: number;
+  reduceOnly: boolean;
+  executableAt: number;
+  expiresAt: number;
+}
+
+export interface OrderConfig {
+  minDelay: number;
+  maxDelay: number;
+  keeperFee: bigint;
+}
+
 export interface Risk {
   maxPriceAge: bigint;
   maxConfidenceRatio: bigint;
@@ -67,6 +86,7 @@ export interface AccountData {
   lpShares: bigint;
   lpUnlockTime: number;
   positions: Position[];
+  orders: PendingOrder[];
 }
 
 export type PriceHistory = Record<number, { t: number; p: number }[]>;
@@ -100,6 +120,21 @@ const mapMarket = (m: Row): Market => {
     fundingRate: m.fundingRate as bigint,
   };
 };
+const mapOrder = (v: Row): PendingOrder => {
+  const o = v.order as Row;
+  return {
+    marketId: Number(v.marketId),
+    symbol: v.symbol as string,
+    sizeDelta: o.sizeDelta as bigint,
+    marginDelta: o.marginDelta as bigint,
+    acceptablePrice: o.acceptablePrice as bigint,
+    keeperFee: o.keeperFee as bigint,
+    commitTime: Number(o.commitTime),
+    reduceOnly: o.reduceOnly as boolean,
+    executableAt: Number(v.executableAt),
+    expiresAt: Number(v.expiresAt),
+  };
+};
 const mapPosition = (p: Row): Position => ({
   marketId: Number(p.marketId),
   symbol: p.symbol as string,
@@ -129,24 +164,32 @@ export function useExchangeData(provider: Provider, account?: string) {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [vault, setVault] = useState<Vault>();
   const [risk, setRisk] = useState<Risk>();
+  const [orderConfig, setOrderConfig] = useState<OrderConfig>();
   const [accountData, setAccountData] = useState<AccountData>();
   const [tokenDecimals, setTokenDecimals] = useState(6);
   const [error, setError] = useState<string>();
   const [history, setHistory] = useState<PriceHistory>({});
+  // Chain clock minus wall clock (seconds). Order delays and oracle ages are judged on chain time.
+  const [clockOffset, setClockOffset] = useState(0);
   const accountRef = useRef(account);
   accountRef.current = account;
 
   const refresh = useCallback(async () => {
     if (!exchange || !token) return;
     try {
-      const [rawMarkets, vaultBalance, nav, totalShares, skew, rawRisk] = await Promise.all([
+      const [rawMarkets, vaultBalance, nav, totalShares, skew, rawRisk, rawOrderCfg, block] = await Promise.all([
         exchange.getMarkets(),
         exchange.vaultBalance(),
         exchange.vaultNav(),
         exchange.totalLpShares(),
         exchange.totalSkewNotional(),
         exchange.risk(),
+        exchange.orderConfig(),
+        provider.getBlock("latest"),
       ]);
+      if (block) setClockOffset(block.timestamp - Date.now() / 1000);
+      const oc = rawOrderCfg as Row;
+      setOrderConfig({ minDelay: Number(oc.minDelay), maxDelay: Number(oc.maxDelay), keeperFee: oc.keeperFee as bigint });
       const ms = (rawMarkets as Row[]).map(mapMarket);
       setMarkets(ms);
       setVault({ balance: vaultBalance, nav, totalShares, totalSkewNotional: skew });
@@ -176,13 +219,14 @@ export function useExchangeData(provider: Provider, account?: string) {
 
       const acct = accountRef.current;
       if (acct) {
-        const [balance, walletBalance, allowance, lpShares, lpUnlockTime, positions] = await Promise.all([
+        const [balance, walletBalance, allowance, lpShares, lpUnlockTime, positions, orders] = await Promise.all([
           exchange.balances(acct),
           token.balanceOf(acct),
           token.allowance(acct, deployment!.exchange),
           exchange.lpShares(acct),
           exchange.lpUnlockTime(acct),
           exchange.getPositions(acct),
+          exchange.getOrders(acct),
         ]);
         if (acct === accountRef.current) {
           setAccountData({
@@ -192,6 +236,7 @@ export function useExchangeData(provider: Provider, account?: string) {
             lpShares,
             lpUnlockTime: Number(lpUnlockTime),
             positions: (positions as Row[]).map(mapPosition),
+            orders: (orders as Row[]).map(mapOrder),
           });
         }
       } else {
@@ -201,7 +246,7 @@ export function useExchangeData(provider: Provider, account?: string) {
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [exchange, token]);
+  }, [exchange, token, provider]);
 
   useEffect(() => {
     token?.decimals().then((d: bigint) => setTokenDecimals(Number(d))).catch(() => {});
@@ -213,7 +258,14 @@ export function useExchangeData(provider: Provider, account?: string) {
     return () => clearInterval(id);
   }, [refresh, account]);
 
-  return { markets, vault, risk, account: accountData, tokenDecimals, history, error, refresh };
+  // Never let the estimate step backwards (a poll can return a stale block), or "ready" UI flickers.
+  const lastNow = useRef(0);
+  const chainNow = useCallback(() => {
+    lastNow.current = Math.max(lastNow.current, Math.floor(Date.now() / 1000 + clockOffset));
+    return lastNow.current;
+  }, [clockOffset]);
+
+  return { markets, vault, risk, orderConfig, chainNow, account: accountData, tokenDecimals, history, error, refresh };
 }
 
 export type ExchangeData = ReturnType<typeof useExchangeData>;

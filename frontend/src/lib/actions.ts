@@ -1,8 +1,8 @@
-import { Contract, MaxUint256, id as keccakId, type Signer } from "ethers";
+import { Contract, MaxUint256, id as keccakId, type Provider, type Signer } from "ethers";
 import { deployment, ERC20_ABI, EXCHANGE_ABI, MOCK_ORACLE_ABI } from "../config";
 import { getPriceUpdate } from "./oracle";
 
-const exchangeFor = (s: Signer) => new Contract(deployment!.exchange, EXCHANGE_ABI, s);
+const exchangeFor = (s: Signer | Provider) => new Contract(deployment!.exchange, EXCHANGE_ABI, s);
 const tokenFor = (s: Signer) => new Contract(deployment!.collateral, ERC20_ABI, s);
 
 async function withUpdate(s: Signer, feedIds: string[]) {
@@ -31,21 +31,86 @@ export async function withdraw(s: Signer, tokenAmount: bigint) {
   await (await exchangeFor(s).withdraw(tokenAmount)).wait();
 }
 
-export async function modifyPosition(
+/**
+ * Step 1 of a trade: commit an order. A keeper executes it after the order delay at a price
+ * published after the commit. Returns the commit block so callers can watch for the outcome.
+ */
+export async function commitOrder(
   s: Signer,
   marketId: number,
-  feedId: string,
   sizeDelta: bigint,
   marginDelta: bigint,
   acceptablePrice: bigint,
-) {
-  const { update, value } = await withUpdate(s, [feedId]);
-  await (await exchangeFor(s).modifyPosition(marketId, sizeDelta, marginDelta, acceptablePrice, update, { value })).wait();
+  reduceOnly = false,
+): Promise<number> {
+  const rc = await (await exchangeFor(s).commitOrder(marketId, sizeDelta, marginDelta, acceptablePrice, reduceOnly)).wait();
+  return rc.blockNumber as number;
 }
 
-export async function closePosition(s: Signer, marketId: number, feedId: string, acceptablePrice: bigint) {
+/** Step 2: execute a pending order (anyone can; the caller earns the keeper fee). */
+export async function executeOrder(s: Signer, marketId: number, feedId: string, trader: string) {
   const { update, value } = await withUpdate(s, [feedId]);
-  await (await exchangeFor(s).closePosition(marketId, acceptablePrice, update, { value })).wait();
+  await (await exchangeFor(s).executeOrder(marketId, trader, update, { value })).wait();
+}
+
+export async function cancelOrder(s: Signer, marketId: number, trader: string) {
+  await (await exchangeFor(s).cancelOrder(marketId, trader)).wait();
+}
+
+export type OrderOutcome =
+  | { status: "filled"; fillPrice: bigint }
+  | { status: "rejected"; reason: string }
+  | { status: "expired" }
+  | { status: "pending" };
+
+/** Polls until the committed order is executed, rejected or cancelled (or `timeoutMs` passes). */
+export async function waitForOrder(
+  provider: Provider,
+  marketId: number,
+  trader: string,
+  fromBlock: number,
+  timeoutMs: number,
+): Promise<OrderOutcome> {
+  const ex = exchangeFor(provider);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const [executed, cancelled] = await Promise.all([
+      ex.queryFilter(ex.filters.OrderExecuted(marketId, trader), fromBlock),
+      ex.queryFilter(ex.filters.OrderCancelled(marketId, trader), fromBlock),
+    ]);
+    if (executed.length) {
+      const fills = await ex.queryFilter(ex.filters.PositionModified(marketId, trader), executed[0].blockNumber);
+      const fill = fills.find((f) => f.transactionHash === executed[0].transactionHash);
+      return { status: "filled", fillPrice: fill && "args" in fill ? (fill.args.fillPrice as bigint) : 0n };
+    }
+    if (cancelled.length) {
+      const c = cancelled[0];
+      const reason = "args" in c ? (c.args.reason as string) : "0x";
+      if (reason === "0x") return { status: "expired" };
+      const err = ex.interface.parseError(reason);
+      return { status: "rejected", reason: err ? humanize(err.name) : reason };
+    }
+  }
+  return { status: "pending" };
+}
+
+const REASONS: Record<string, string> = {
+  SlippageExceeded: "price moved past your slippage limit",
+  InsufficientMargin: "not enough margin at the execution price",
+  MarginBelowMinimum: "margin below the minimum",
+  PositionUnderwater: "position is underwater (awaiting liquidation)",
+  OpenInterestCapExceeded: "market open-interest cap reached",
+  InsufficientLiquidity: "not enough vault liquidity",
+  MarketNotActive: "market is close-only",
+  EnforcedPause: "exchange is paused",
+  NothingToReduce: "no position left to reduce",
+};
+const humanize = (name: string) => REASONS[name] ?? name;
+
+export async function addMargin(s: Signer, marketId: number, feedId: string, amount: bigint) {
+  const { update, value } = await withUpdate(s, [feedId]);
+  await (await exchangeFor(s).addMargin(marketId, amount, update, { value })).wait();
 }
 
 export async function liquidate(s: Signer, marketId: number, feedId: string, trader: string) {

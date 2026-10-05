@@ -18,7 +18,8 @@ frontend/             React + Vite + ethers trading UI
 | Who | Action |
 |---|---|
 | Anyone | `deposit` / `withdraw` USDC to a trading account (withdrawals work even when paused) |
-| Traders | `modifyPosition` to open, increase, reduce, flip or close long/short positions with up to 20x leverage (per-market), and add/remove margin; `closePosition` to exit |
+| Traders | `commitOrder` to open, increase, reduce, flip or close long/short positions with up to 20x leverage (per-market) or withdraw margin; `addMargin` to top up instantly |
+| Keepers | `executeOrder` to fill committed orders after the delay (earns the keeper fee); `cancelOrder` on expired ones |
 | Anyone | `createMarket(symbol, feedId)` to list any stock that has an oracle feed (pays a listing fee to LPs) |
 | LPs | `addLiquidity` / `removeLiquidity` to the shared vault that backs every market |
 | Keepers | `liquidate` any position below maintenance margin for a reward |
@@ -26,6 +27,20 @@ frontend/             React + Vite + ethers trading UI
 ## How it works
 
 **Counterparty: one shared liquidity vault.** Trades execute against the vault at the oracle price rather than an order book. LPs take the other side of the traders' *net* exposure. They earn trading fees, listing fees, funding paid by the crowded side, and trader losses; they pay out trader profits. Vault NAV is `cash − traders' unrealized PnL − traders' accrued funding`. The contract tracks per-market aggregates (net size, Σ size·entry, Σ size·fundingIndex), so NAV costs O(markets), not O(positions).
+
+**Two-step orders.** Trades never fill at a price the trader could see when submitting:
+
+1. `commitOrder(market, sizeDelta, marginDelta, acceptablePrice, reduceOnly)` records the order and escrows any added margin plus a keeper fee from the trading account.
+2. After `minDelay`, anyone calls `executeOrder(market, trader, priceUpdate)`. It requires an oracle price **published at least `minDelay` after the commit** (`PriceNotAfterCommit` otherwise). The fill uses that price.
+3. If the order is invalid at that price (fill past `acceptablePrice`, too little margin, OI cap, market paused or close-only), it is **cancelled, not reverted**. The escrowed margin returns to the trader and the executor still earns the keeper fee, so keepers aren't stuck with failing transactions.
+4. Orders expire after `maxDelay`. An order can't be cancelled before it expires, so committing is never a free option to back out when the price moves against you. After expiry anyone can `cancelOrder`; the fee goes to the caller, or back to the trader if they cancel it themselves.
+
+Details:
+- One pending order per trader per market.
+- `reduceOnly` orders (the UI's Close button) are clamped to the position size at execution. If the position is gone, for example liquidated in the meantime, the order is cancelled rather than opening the opposite side.
+- Execution runs in a self-call wrapped in `try/catch`. An empty revert (out-of-gas) reverts the whole transaction, so a keeper can't starve the call to force a cancel and collect the fee.
+- `addMargin` stays instant because it only lowers risk and may be urgent near liquidation. Liquidations stay instant too.
+- The bundled keeper (`scripts/keeper.js`) executes orders as soon as they're valid, cancels expired ones, and liquidates. In the UI, if no keeper picks up an order, the trader can execute it from **Pending orders** and keep the fee themselves.
 
 **Pricing.** `fill = oracle × (1 + avgSkew × oracle / skewScale)`. Trades that grow the long/short imbalance fill slightly worse, and trades that shrink it fill slightly better (Synthetix-style premium, capped at ±10%). Round trips are neutral apart from fees.
 
@@ -63,6 +78,8 @@ frontend/             React + Vite + ethers trading UI
 | Listing fee | $100 |
 | Max price age | 300s local, 60s Pyth |
 | LP lockup | 60s local, 24h Pyth |
+| Order delay (min / expiry) | 1s / 120s local, 2s / 60s Pyth |
+| Keeper fee | $0.50 per order |
 
 ## Quick start (local)
 
@@ -70,7 +87,7 @@ Requires Node 18+.
 
 ```bash
 npm install
-npm test                      # 34 tests incl. randomized solvency invariant
+npm test                      # 44 tests incl. randomized solvency invariant
 
 # terminal 1: local chain
 npm run node
@@ -79,7 +96,7 @@ npm run node
 npm run deploy:local
 npm run feeder:local          # random-walk prices for every market (keeps them "open")
 
-# terminal 3: liquidation bot (optional)
+# terminal 3: keeper bot: executes orders, cancels expired ones, liquidates
 npm run keeper:local
 
 # terminal 4: UI
@@ -124,10 +141,11 @@ npm test
 - **Trading:** PnL math, max leverage, slippage, averaging entry on increase, keeping entry on reduce, flips, margin moves, minimum margin, skew premium.
 - **Market hours, close-only, pause:** behavior when the oracle is stale, inactive markets, and pause semantics.
 - **Funding:** accrual and settlement.
+- **Delayed orders:** escrow and keeper fee, `OrderNotReady`, `PriceNotAfterCommit` (the fill uses the newer price), one order per market, rejected orders refund escrow and still pay the keeper, no cancelling before expiry, expired orders can't execute, reduce-only clamping and no flip after liquidation, instant `addMargin` while paused, self-call guard, config validation.
 - **Liquidations:** liquidation price, rewards, bad debt, blocking underwater closes.
 - **Vault:** fee accrual, NAV marking, lockup, utilization caps, OI caps.
-- **Pyth integration:** expo normalization, in-tx updates, fee refund, confidence check (against Pyth's `MockPyth`).
-- **Solvency invariant:** 3 seeded random runs of trades, price shocks, time jumps and liquidations. After every step, `token balance == Σ accounts + Σ margins + vault cash` holds exactly, and after unwinding, every aggregate returns to zero.
+- **Pyth integration:** expo normalization, in-tx updates, fee refund, confidence check, and an order that only fills once a keeper submits a post-commit price (against Pyth's `MockPyth`).
+- **Solvency invariant:** 3 seeded random runs of trades, orders left pending to execute late, fail or expire, price shocks, time jumps and liquidations. Order escrow counts toward the balance check. After every step, `token balance == Σ accounts + Σ margins + vault cash` holds exactly, and after unwinding, every aggregate returns to zero.
 
 Contracts compile with the npm-pinned `solc` 0.8.28 (`viaIR`), so builds work offline.
 
@@ -135,7 +153,7 @@ Contracts compile with the npm-pinned `solc` 0.8.28 (`viaIR`), so builds work of
 
 This is **unaudited** software. Before mainnet:
 
-- **Oracle latency.** Market orders execute at the price in the caller's own oracle update. On a pull oracle, a trader can choose which recent update to submit (anything inside `maxPriceAge`) and so trade on a price they already know is out of date. Production perps (GMX, Synthetix) close this with **two-step delayed orders executed by keepers**. Add that, or keep `maxPriceAge` very short and fees above typical intra-window moves.
+- **Oracle latency.** Two-step orders stop traders from filling at a price they already know. Some optionality remains: within the `minDelay`–`maxDelay` window, a trader who executes their own order could wait for a favourable price, as long as no keeper beats them to it. Keep `maxDelay` short and run competitive keepers. Liquidations and LP deposits/withdrawals still use the latest on-chain price. LP deposits are protected by the lockup; LP withdrawals could also move to a delayed flow.
 - **Gap risk.** Stocks gap at the open and over weekends and halts. Positions can blow through liquidation, and the vault absorbs the bad debt. Size leverage, OI caps and maintenance margin for gaps, not for intraday volatility.
 - **Single shared vault.** Every market draws on the same LP capital. A permissionless listing can add a thinly covered or volatile stock. Consider governance-gated listing parameters, lower defaults for new markets, or per-market caps scaled to liquidity.
 - **Admin keys.** The owner can change the oracle and the risk parameters. Use a multisig and a timelock.

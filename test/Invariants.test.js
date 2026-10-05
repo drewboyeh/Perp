@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
-const { usd, usdc, feed, DEFAULT_RISK, DEFAULT_PARAMS } = require("./helpers");
+const { usd, usdc, feed, DEFAULT_RISK, DEFAULT_PARAMS, trade, close, execute } = require("./helpers");
 
 // Deterministic PRNG so failures reproduce.
 function rng(seed) {
@@ -34,6 +34,7 @@ describe("Solvency invariant (randomized)", function () {
         await oracle.getAddress(),
         { ...DEFAULT_RISK, maxPriceAge: 3600n * 24n },
         { ...DEFAULT_PARAMS, skewScale: usd(5_000_000), maxFundingRate: usd("0.05") },
+        { minDelay: 2n, maxDelay: 600n, keeperFee: usd("0.5") },
       ]);
       const everyone = [owner, lp, keeper, ...traders];
       for (const s of everyone) {
@@ -53,10 +54,29 @@ describe("Solvency invariant (randomized)", function () {
         let accounted = await exchange.vaultBalance();
         for (const s of everyone) accounted += await exchange.balances(s.address);
         for (let m = 0; m < symbols.length; m++) {
-          for (const t of traders) accounted += (await exchange.positions(m, t.address)).margin;
+          for (const t of traders) {
+            accounted += (await exchange.positions(m, t.address)).margin;
+            // Pending orders escrow the keeper fee and any margin being added.
+            const o = await exchange.orders(m, t.address);
+            accounted += o.keeperFee + (o.marginDelta > 0n ? o.marginDelta : 0n);
+          }
         }
         const held = (await token.balanceOf(await exchange.getAddress())) * 10n ** 12n;
         expect(held).to.equal(accounted);
+      };
+
+      // Execute pending orders that can still fill; cancel expired ones.
+      const settleOrders = async () => {
+        const { maxDelay } = await exchange.orderConfig();
+        const now = BigInt(await time.latest());
+        for (let m = 0; m < symbols.length; m++) {
+          for (const t of traders) {
+            const o = await exchange.orders(m, t.address);
+            if (o.commitTime === 0n) continue;
+            if (now > o.commitTime + maxDelay) await exchange.connect(keeper).cancelOrder(m, t.address);
+            else await execute(exchange, t.address, m).catch(() => {}); // cancelled orders are fine here
+          }
+        }
       };
 
       let ok = 0;
@@ -65,17 +85,22 @@ describe("Solvency invariant (randomized)", function () {
         const t = traders[Math.floor(rand() * traders.length)];
         const m = Math.floor(rand() * symbols.length);
         try {
-          if (r < 0.45) {
+          if (r < 0.4) {
             const size = usd(((rand() - 0.5) * 200).toFixed(4));
             const margin = usd((rand() * 1500).toFixed(2));
-            const acceptable = size >= 0n ? ethers.MaxUint256 : 0n;
-            await exchange.connect(t).modifyPosition(m, size, margin, acceptable, []);
-          } else if (r < 0.55) {
-            await exchange.connect(t).closePosition(m, (await exchange.positions(m, t.address)).size > 0n ? 0n : ethers.MaxUint256, []);
-          } else if (r < 0.65) {
+            await trade(exchange, t, m, size, margin);
+          } else if (r < 0.48) {
+            await close(exchange, t, m);
+          } else if (r < 0.56) {
             const delta = usd(((rand() - 0.5) * 400).toFixed(2));
-            await exchange.connect(t).modifyPosition(m, 0n, delta, 0n, []);
-          } else if (r < 0.85) {
+            await trade(exchange, t, m, 0n, delta);
+          } else if (r < 0.64) {
+            // Commit and leave it pending; it executes, fails or expires in later steps.
+            const size = usd(((rand() - 0.5) * 100).toFixed(4));
+            await exchange.connect(t).commitOrder(m, size, usd(300), size >= 0n ? ethers.MaxUint256 : 0n, false);
+          } else if (r < 0.7) {
+            await settleOrders();
+          } else if (r < 0.86) {
             const sym = symbols[m];
             prices[sym] *= 1 + (rand() - 0.5) * 0.16;
             await time.increase(Math.floor(rand() * 7200));
@@ -99,6 +124,8 @@ describe("Solvency invariant (randomized)", function () {
             "NothingToDo",
             "InsufficientLiquidity",
             "OpenInterestCapExceeded",
+            "OrderPending",
+            "NothingToReduce",
           ];
           if (!known.some((k) => msg.includes(k))) throw e;
         }
@@ -107,14 +134,17 @@ describe("Solvency invariant (randomized)", function () {
       if (process.env.DEBUG_FUZZ) console.log(`seed ${seed}: ${ok}/80 ops succeeded`);
       expect(ok).to.be.gt(40);
 
-      // Wind everything down: liquidate what's liquidatable, close the rest.
+      // Wind everything down: settle orders, liquidate what's liquidatable, close the rest.
+      await pushPrices();
+      await time.increase(601);
+      await settleOrders();
       await pushPrices();
       for (let m = 0; m < symbols.length; m++) {
         for (const t of traders) {
           const pos = await exchange.getPosition(m, t.address);
           if (pos.size === 0n) continue;
           if (pos.liquidatable) await exchange.connect(keeper).liquidate(m, t.address, []);
-          else await exchange.connect(t).closePosition(m, pos.size > 0n ? 0n : ethers.MaxUint256, []);
+          else await close(exchange, t, m);
         }
         const mk = await exchange.getMarket(m);
         expect(mk.longOpenInterest).to.equal(0);
@@ -123,6 +153,7 @@ describe("Solvency invariant (randomized)", function () {
         expect(mk.netFundingBasis).to.equal(0);
       }
       await checkInvariant();
+      for (const t of traders) expect((await exchange.getOrders(t.address)).length).to.equal(0);
       expect(await exchange.totalSkewNotional()).to.equal(0);
       // With no open positions NAV is exactly the vault balance.
       expect(await exchange.vaultNav()).to.equal(await exchange.vaultBalance());

@@ -1,11 +1,11 @@
 import type { Market } from "../hooks/useExchangeData";
 import { fmtCompactUsd, fmtPrice, toNum } from "../lib/format";
 
-export function MarketHeader({ market }: { market: Market }) {
+export function MarketHeader({ market, now }: { market: Market; now: number }) {
   const longUsd = (market.longOpenInterest * market.price) / 10n ** 18n;
   const shortUsd = (market.shortOpenInterest * market.price) / 10n ** 18n;
   const fundingDaily = toNum(market.fundingRate) * 100;
-  const age = Math.max(0, Math.floor(Date.now() / 1000) - market.publishTime);
+  const age = Math.max(0, now - market.publishTime);
   return (
     <div className="panel market-header">
       <div className="mh-title">

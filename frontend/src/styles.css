@@ -639,11 +639,20 @@ td .sub {
   font-size: 11px;
   margin-top: 2px;
 }
+/* Keep row actions visible while the table scrolls horizontally. */
 td.actions {
   text-align: right;
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+  white-space: nowrap;
+  position: sticky;
+  right: 0;
+  background: var(--panel);
+  box-shadow: -12px 0 12px -12px rgba(0, 0, 0, 0.5);
+}
+td.actions .btn + .btn {
+  margin-left: 6px;
+}
+tr.danger td.actions {
+  background: var(--panel);
 }
 .side-tag {
   font-size: 10px;
@@ -912,4 +921,19 @@ code {
   .earn {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ---------- pending orders ---------- */
+
+.orders {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.status-live {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.toast.info {
+  border-left-color: var(--warn);
 }

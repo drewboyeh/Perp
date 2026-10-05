@@ -4,7 +4,7 @@ import type { Wallet } from "../hooks/useWallet";
 import type { Tx } from "../hooks/useTx";
 import { WAD, fmtNum, fmtPrice, fmtUsd, parseWad, toNum } from "../lib/format";
 import { abs, liquidationPrice, notionalFor, sizeFor, withSlippage } from "../lib/math";
-import { deposit, modifyPosition } from "../lib/actions";
+import { submitOrder } from "../lib/submitOrder";
 
 interface Props {
   market: Market;
@@ -34,6 +34,8 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
   const lev = Math.min(leverage, maxLev);
   const scale = 10n ** BigInt(18 - data.tokenDecimals);
   const existing = data.account?.positions.find((p) => p.marketId === market.id);
+  const pending = data.account?.orders.find((o) => o.marketId === market.id);
+  const keeperFee = data.orderConfig?.keeperFee ?? 0n;
 
   const o = useMemo(() => {
     const margin = parseWad(marginIn);
@@ -47,11 +49,12 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
     const fee = (((abs(size) * fill) / WAD) * market.params.takerFee) / WAD;
     const liq = liquidationPrice(size, fill, margin - fee, market.params.maintenanceMargin);
     const acceptable = withSlippage(fill, side === "long", BigInt(slippageBps));
+    const escrow = margin + keeperFee;
     const accountBal = data.account?.balance ?? 0n;
-    const shortfall = margin > accountBal ? margin - accountBal : 0n;
+    const shortfall = escrow > accountBal ? escrow - accountBal : 0n;
     const shortfallTokens = (shortfall + scale - 1n) / scale;
-    return { margin, notional, size, fill, fee, liq, acceptable, shortfallTokens };
-  }, [marginIn, lev, maxLev, side, market, slippageBps, data.account?.balance, scale]);
+    return { margin, notional, size, fill, fee, liq, acceptable, escrow, shortfallTokens };
+  }, [marginIn, lev, maxLev, side, market, slippageBps, data.account?.balance, scale, keeperFee]);
 
   const minMargin = data.risk?.minPositionMargin ?? 0n;
   const walletBal = data.account?.walletBalance ?? 0n;
@@ -61,12 +64,16 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
   else if (!market.priceFresh) disabledReason = "Market closed (stale price)";
   else if (o.margin < minMargin) disabledReason = `Min margin ${fmtUsd(minMargin, 0)}`;
   else if (o.shortfallTokens > walletBal) disabledReason = "Insufficient funds";
+  else if (pending) disabledReason = "Order pending in this market";
 
   const submit = () =>
-    tx.run(`${side === "long" ? "Long" : "Short"} ${fmtNum(abs(o.size))} ${market.symbol}`, async () => {
-      const s = await wallet.getSigner();
-      if (o.shortfallTokens > 0n) await deposit(s, o.shortfallTokens);
-      await modifyPosition(s, market.id, market.feedId, o.size, o.margin, o.acceptable);
+    submitOrder(wallet, tx, data, {
+      label: `${side === "long" ? "Long" : "Short"} ${fmtNum(abs(o.size))} ${market.symbol}`,
+      market,
+      sizeDelta: o.size,
+      marginDelta: o.margin,
+      acceptablePrice: o.acceptable,
+      escrow: o.escrow,
     });
 
   const levMarks = [1, 2, 5, 10, 20, 50, 100].filter((x) => x <= maxLev);
@@ -139,6 +146,10 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
           <dd className="mono">{fmtUsd(o.fee)}</dd>
         </div>
         <div>
+          <dt>Keeper fee</dt>
+          <dd className="mono">{fmtUsd(keeperFee)}</dd>
+        </div>
+        <div>
           <dt>Liquidation price</dt>
           <dd className="mono down">{o.liq ? `$${fmtPrice(o.liq)}` : "—"}</dd>
         </div>
@@ -156,6 +167,10 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
         </div>
       </dl>
 
+      <p className="note">
+        Orders fill {data.orderConfig?.minDelay ?? 1}s+ after you submit, at the next oracle price, so nobody can
+        trade on a stale quote. Fills worse than your slippage limit are rejected and refunded.
+      </p>
       {o.shortfallTokens > 0n && !disabledReason && (
         <p className="note">Deposits {fmtUsd(o.shortfallTokens * scale)} from your wallet first.</p>
       )}

@@ -50,6 +50,13 @@ async function main() {
     listingFee: usd(100),
   };
 
+  // Two-step orders: execute no sooner than minDelay after commit, at a price published after it.
+  const orderConfig = {
+    minDelay: usePyth ? 2n : 1n,
+    maxDelay: usePyth ? 60n : 120n,
+    keeperFee: usd("0.5"),
+  };
+
   let collateralAddress;
   let oracle;
   if (usePyth) {
@@ -66,7 +73,13 @@ async function main() {
   await oracle.waitForDeployment();
   const oracleAddress = await oracle.getAddress();
 
-  const exchange = await ethers.deployContract("PerpExchange", [collateralAddress, oracleAddress, risk, MARKET_PARAMS]);
+  const exchange = await ethers.deployContract("PerpExchange", [
+    collateralAddress,
+    oracleAddress,
+    risk,
+    MARKET_PARAMS,
+    orderConfig,
+  ]);
   await exchange.waitForDeployment();
   const exchangeAddress = await exchange.getAddress();
   const startBlock = (await exchange.deploymentTransaction().wait()).blockNumber;

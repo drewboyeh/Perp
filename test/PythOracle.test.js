@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
-const { usd, usdc, DEFAULT_RISK, DEFAULT_PARAMS } = require("./helpers");
+const { usd, usdc, DEFAULT_RISK, DEFAULT_PARAMS, DEFAULT_ORDER } = require("./helpers");
 
 // Pyth's real feed id format; any bytes32 works against MockPyth.
 const AAPL_FEED = ethers.id("Equity.US.AAPL/USD");
@@ -18,6 +18,7 @@ describe("PythOracle integration", function () {
       await adapter.getAddress(),
       { ...DEFAULT_RISK, listingFee: 0n },
       DEFAULT_PARAMS,
+      DEFAULT_ORDER,
     ]);
     for (const s of [owner, alice]) {
       await token.mint(s.address, usdc(2_000_000));
@@ -54,9 +55,15 @@ describe("PythOracle integration", function () {
     const spent = before - (await ethers.provider.getBalance(alice.address));
     expect(spent).to.equal(rc.gasUsed * rc.gasPrice + UPDATE_FEE);
 
-    await exchange
-      .connect(alice)
-      .modifyPosition(0, usd(5), usd(200), ethers.MaxUint256, await update(20100000n), { value: UPDATE_FEE });
+    await exchange.connect(alice).commitOrder(0, usd(5), usd(200), ethers.MaxUint256, false);
+    await time.increase(2);
+    // Without a newer update the only on-chain price predates the commit.
+    await expect(exchange.executeOrder(0, alice.address, [])).to.be.revertedWithCustomError(
+      exchange,
+      "PriceNotAfterCommit",
+    );
+    // A keeper pulls a fresh signed price and executes in the same transaction.
+    await exchange.executeOrder(0, alice.address, await update(20100000n), { value: UPDATE_FEE });
     const pos = await exchange.getPosition(0, alice.address);
     expect(pos.size).to.equal(usd(5));
     expect(pos.entryPrice).to.be.closeTo(usd(201), usd("0.01"));

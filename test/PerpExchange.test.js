@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
-const { WAD, usd, usdc, feed, DEFAULT_PARAMS, deployFixture, trade } = require("./helpers");
+const { WAD, usd, usdc, feed, DEFAULT_PARAMS, deployFixture, trade, close, expectFail } = require("./helpers");
 
 const AAPL = 0;
 
@@ -78,7 +78,7 @@ describe("PerpExchange", function () {
       const size = usd(10); // 10 shares @ $200 = $2000 notional, 4x on $500
 
       const quote = await exchange.quoteFillPrice(AAPL, size);
-      const openRc = await (await trade(exchange, alice, AAPL, size, usd(500))).wait();
+      const openRc = await trade(exchange, alice, AAPL, size, usd(500));
       const open = eventArgs(openRc, exchange, "PositionModified");
       expect(open.fillPrice).to.equal(quote);
       expect(open.fee).to.equal((size * quote) / WAD / 1000n);
@@ -88,12 +88,12 @@ describe("PerpExchange", function () {
       const pos = await exchange.getPosition(AAPL, alice.address);
       expect(pos.unrealizedPnl).to.be.closeTo(usd(200), usd("0.01"));
 
-      const closeRc = await (await exchange.connect(alice).closePosition(AAPL, 0, [])).wait();
-      const close = eventArgs(closeRc, exchange, "PositionModified");
-      expect(close.newSize).to.equal(0);
-      expect(close.realizedPnl).to.equal((size * (close.fillPrice - open.fillPrice)) / WAD);
+      const closeRc = await close(exchange, alice, AAPL);
+      const closed = eventArgs(closeRc, exchange, "PositionModified");
+      expect(closed.newSize).to.equal(0);
+      expect(closed.realizedPnl).to.equal((size * (closed.fillPrice - open.fillPrice)) / WAD);
 
-      const expected = usd(1000) - open.fee - close.fee + close.realizedPnl - close.fundingPaid;
+      const expected = usd(1000) - open.fee - closed.fee + closed.realizedPnl - closed.fundingPaid;
       expect(await exchange.balances(alice.address)).to.equal(expected);
       expect(expected).to.be.closeTo(usd(1195.8), usd("0.1"));
       expect((await exchange.positions(AAPL, alice.address)).size).to.equal(0);
@@ -104,9 +104,9 @@ describe("PerpExchange", function () {
       await exchange.connect(alice).deposit(usdc(1000));
       await trade(exchange, alice, AAPL, -usd(10), usd(500));
       await oracle.setPrice(feed("AAPL"), usd(210));
-      const rc = await (await exchange.connect(alice).closePosition(AAPL, ethers.MaxUint256, [])).wait();
-      const close = eventArgs(rc, exchange, "PositionModified");
-      expect(close.realizedPnl).to.be.closeTo(-usd(100), usd("0.01"));
+      const rc = await close(exchange, alice, AAPL);
+      const closed = eventArgs(rc, exchange, "PositionModified");
+      expect(closed.realizedPnl).to.be.closeTo(-usd(100), usd("0.01"));
       expect(await exchange.balances(alice.address)).to.be.closeTo(usd(1000 - 100 - 4.1), usd("0.1"));
     });
 
@@ -114,10 +114,7 @@ describe("PerpExchange", function () {
       const { exchange, alice } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(1000));
       // $100 margin, $2100 notional = 21x
-      await expect(trade(exchange, alice, AAPL, usd("10.5"), usd(100))).to.be.revertedWithCustomError(
-        exchange,
-        "InsufficientMargin",
-      );
+      await expectFail(trade(exchange, alice, AAPL, usd("10.5"), usd(100)), "InsufficientMargin");
       // ~18x is fine
       await trade(exchange, alice, AAPL, usd(9), usd(100));
       const pos = await exchange.getPosition(AAPL, alice.address);
@@ -127,12 +124,8 @@ describe("PerpExchange", function () {
     it("rejects fills worse than the acceptable price", async function () {
       const { exchange, alice } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(1000));
-      await expect(
-        exchange.connect(alice).modifyPosition(AAPL, usd(1), usd(100), usd(200), []),
-      ).to.be.revertedWithCustomError(exchange, "SlippageExceeded");
-      await expect(
-        exchange.connect(alice).modifyPosition(AAPL, -usd(1), usd(100), usd(201), []),
-      ).to.be.revertedWithCustomError(exchange, "SlippageExceeded");
+      await expectFail(trade(exchange, alice, AAPL, usd(1), usd(100), { acceptablePrice: usd(200) }), "SlippageExceeded");
+      await expectFail(trade(exchange, alice, AAPL, -usd(1), usd(100), { acceptablePrice: usd(201) }), "SlippageExceeded");
     });
 
     it("averages entry on increase, keeps it on reduce, and resets it on flip", async function () {
@@ -151,7 +144,7 @@ describe("PerpExchange", function () {
       expect((await exchange.positions(AAPL, alice.address)).entryPrice).to.equal(e2);
       expect((await exchange.positions(AAPL, alice.address)).size).to.equal(usd(15));
 
-      const rc = await (await trade(exchange, alice, AAPL, -usd(20), 0n)).wait();
+      const rc = await trade(exchange, alice, AAPL, -usd(20), 0n);
       const ev = eventArgs(rc, exchange, "PositionModified");
       const pos = await exchange.positions(AAPL, alice.address);
       expect(pos.size).to.equal(-usd(5));
@@ -169,19 +162,13 @@ describe("PerpExchange", function () {
       await trade(exchange, alice, AAPL, 0n, -usd(150));
       expect(await exchange.balances(alice.address)).to.be.closeTo(usd(850), usd("0.01"));
       // Pulling margin past initial margin (notional/20 = $100) fails
-      await expect(trade(exchange, alice, AAPL, 0n, -usd(60))).to.be.revertedWithCustomError(
-        exchange,
-        "InsufficientMargin",
-      );
+      await expectFail(trade(exchange, alice, AAPL, 0n, -usd(60)), "InsufficientMargin");
     });
 
     it("enforces the minimum position margin", async function () {
       const { exchange, alice } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(1000));
-      await expect(trade(exchange, alice, AAPL, usd("0.01"), usd(5))).to.be.revertedWithCustomError(
-        exchange,
-        "MarginBelowMinimum",
-      );
+      await expectFail(trade(exchange, alice, AAPL, usd("0.01"), usd(5)), "MarginBelowMinimum");
     });
 
     it("applies a skew premium: trades that grow the imbalance fill worse", async function () {
@@ -212,20 +199,20 @@ describe("PerpExchange", function () {
 
   describe("market hours, close-only and pause", function () {
     it("halts trading when the oracle is stale (market closed)", async function () {
-      const { exchange, oracle, alice } = await loadFixture(deployFixture);
+      const { exchange, oracle, alice, bob } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(1000));
       await trade(exchange, alice, AAPL, usd(1), usd(100));
-      await time.increase(61);
-      await expect(trade(exchange, alice, AAPL, usd(1), usd(100))).to.be.revertedWithCustomError(
+      await time.increase(61); // oracle stops publishing, like after the closing bell
+      await exchange.connect(alice).commitOrder(AAPL, -usd(1), 0n, 0n, true);
+      await time.increase(2);
+      await expect(exchange.connect(bob).executeOrder(AAPL, alice.address, [])).to.be.revertedWithCustomError(
         exchange,
         "StalePrice",
       );
-      await expect(exchange.connect(alice).closePosition(AAPL, 0, [])).to.be.revertedWithCustomError(
-        exchange,
-        "StalePrice",
-      );
+      // The order waits (it isn't cancelled) and fills once prices resume.
       await oracle.setPrice(feed("AAPL"), usd(200));
-      await exchange.connect(alice).closePosition(AAPL, 0, []);
+      await exchange.connect(bob).executeOrder(AAPL, alice.address, []);
+      expect((await exchange.positions(AAPL, alice.address)).size).to.equal(0);
     });
 
     it("allows only reductions in inactive markets", async function () {
@@ -233,16 +220,10 @@ describe("PerpExchange", function () {
       await exchange.connect(alice).deposit(usdc(1000));
       await trade(exchange, alice, AAPL, usd(2), usd(100));
       await exchange.connect(owner).setMarketActive(AAPL, false);
-      await expect(trade(exchange, alice, AAPL, usd(1), 0n)).to.be.revertedWithCustomError(
-        exchange,
-        "MarketNotActive",
-      );
-      await expect(trade(exchange, alice, AAPL, -usd(3), 0n)).to.be.revertedWithCustomError(
-        exchange,
-        "MarketNotActive",
-      );
+      await expectFail(trade(exchange, alice, AAPL, usd(1), 0n), "MarketNotActive");
+      await expectFail(trade(exchange, alice, AAPL, -usd(3), 0n), "MarketNotActive");
       await trade(exchange, alice, AAPL, -usd(1), 0n);
-      await exchange.connect(alice).closePosition(AAPL, 0, []);
+      await close(exchange, alice, AAPL);
     });
 
     it("pausing blocks new risk but never exits", async function () {
@@ -250,9 +231,9 @@ describe("PerpExchange", function () {
       await exchange.connect(alice).deposit(usdc(1000));
       await trade(exchange, alice, AAPL, usd(2), usd(100));
       await exchange.connect(owner).pause();
-      await expect(trade(exchange, alice, AAPL, usd(1), 0n)).to.be.revertedWithCustomError(exchange, "EnforcedPause");
+      await expectFail(trade(exchange, alice, AAPL, usd(1), 0n), "EnforcedPause");
       await expect(exchange.connect(alice).deposit(usdc(1))).to.be.revertedWithCustomError(exchange, "EnforcedPause");
-      await exchange.connect(alice).closePosition(AAPL, 0, []);
+      await close(exchange, alice, AAPL);
       await exchange.connect(alice).withdraw(usdc(500));
       await time.increase(3601);
       await exchange.connect(lp).removeLiquidity(await exchange.lpShares(lp.address) / 10n, 0, []);
@@ -279,7 +260,7 @@ describe("PerpExchange", function () {
       expect(a.accruedFunding).to.be.closeTo(usd("6.6667"), usd("0.01"));
       expect(b.accruedFunding).to.be.closeTo(-usd("3.3333"), usd("0.01"));
 
-      const rc = await (await exchange.connect(alice).closePosition(AAPL, 0, [])).wait();
+      const rc = await close(exchange, alice, AAPL);
       expect(eventArgs(rc, exchange, "PositionModified").fundingPaid).to.be.closeTo(usd("6.6667"), usd("0.01"));
     });
   });
@@ -341,10 +322,7 @@ describe("PerpExchange", function () {
     it("prevents an underwater trader from closing to dodge liquidation", async function () {
       const { exchange, oracle, alice } = await openRiskyLong();
       await oracle.setPrice(feed("AAPL"), usd(180));
-      await expect(exchange.connect(alice).closePosition(AAPL, 0, [])).to.be.revertedWithCustomError(
-        exchange,
-        "PositionUnderwater",
-      );
+      await expectFail(close(exchange, alice, AAPL), "PositionUnderwater");
     });
   });
 
@@ -354,7 +332,7 @@ describe("PerpExchange", function () {
       const before = await exchange.lpSharePrice();
       await exchange.connect(alice).deposit(usdc(10_000));
       await trade(exchange, alice, AAPL, usd(100), usd(5000));
-      await exchange.connect(alice).closePosition(AAPL, 0, []);
+      await close(exchange, alice, AAPL);
       expect(await exchange.lpSharePrice()).to.be.gt(before);
     });
 
@@ -386,10 +364,7 @@ describe("PerpExchange", function () {
       const { exchange, oracle, alice, lp } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(200_000));
       // net skew $1.2M > vault ~$1.0M
-      await expect(trade(exchange, alice, AAPL, usd(6000), usd(200_000))).to.be.revertedWithCustomError(
-        exchange,
-        "InsufficientLiquidity",
-      );
+      await expectFail(trade(exchange, alice, AAPL, usd(6000), usd(200_000)), "InsufficientLiquidity");
       await trade(exchange, alice, AAPL, usd(4000), usd(100_000)); // $800k skew
       await time.increase(3601);
       await expect(exchange.connect(lp).removeLiquidity(1n, 0, [])).to.be.revertedWithCustomError(
@@ -410,10 +385,7 @@ describe("PerpExchange", function () {
       await exchange.connect(owner).setMarketParams(AAPL, { ...DEFAULT_PARAMS, maxOpenInterest: usd(10_000) });
       await exchange.connect(alice).deposit(usdc(10_000));
       await trade(exchange, alice, AAPL, usd(40), usd(1000));
-      await expect(trade(exchange, alice, AAPL, usd(20), usd(1000))).to.be.revertedWithCustomError(
-        exchange,
-        "OpenInterestCapExceeded",
-      );
+      await expectFail(trade(exchange, alice, AAPL, usd(20), usd(1000)), "OpenInterestCapExceeded");
       await trade(exchange, alice, AAPL, -usd(80), usd(1000)); // flip to 40 short is fine
     });
   });

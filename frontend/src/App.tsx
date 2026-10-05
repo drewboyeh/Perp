@@ -74,7 +74,7 @@ export default function App() {
           <section className="center">
             {market ? (
               <>
-                <MarketHeader market={market} />
+                <MarketHeader market={market} now={data.chainNow()} />
                 <PriceChart
                   points={data.history[market.id] ?? []}
                   entry={position ? toNum(position.entryPrice) : undefined}

@@ -95,6 +95,28 @@
           "internalType": "struct PerpExchange.MarketParams",
           "name": "_defaultParams",
           "type": "tuple"
+        },
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "minDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "maxDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "keeperFee",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct PerpExchange.OrderConfig",
+          "name": "_orderConfig",
+          "type": "tuple"
         }
       ],
       "stateMutability": "nonpayable",
@@ -103,6 +125,11 @@
     {
       "inputs": [],
       "name": "EnforcedPause",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "ExecutionOutOfGas",
       "type": "error"
     },
     {
@@ -167,6 +194,11 @@
     },
     {
       "inputs": [],
+      "name": "NoOrder",
+      "type": "error"
+    },
+    {
+      "inputs": [],
       "name": "NoPosition",
       "type": "error"
     },
@@ -182,7 +214,49 @@
     },
     {
       "inputs": [],
+      "name": "NothingToReduce",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "OnlySelf",
+      "type": "error"
+    },
+    {
+      "inputs": [],
       "name": "OpenInterestCapExceeded",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "OrderExpired",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "expiresAt",
+          "type": "uint256"
+        }
+      ],
+      "name": "OrderNotExpired",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "executableAt",
+          "type": "uint256"
+        }
+      ],
+      "name": "OrderNotReady",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "OrderPending",
       "type": "error"
     },
     {
@@ -215,6 +289,22 @@
     {
       "inputs": [
         {
+          "internalType": "uint256",
+          "name": "publishTime",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "requiredTime",
+          "type": "uint256"
+        }
+      ],
+      "name": "PriceNotAfterCommit",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
           "internalType": "bytes32",
           "name": "feedId",
           "type": "bytes32"
@@ -231,6 +321,22 @@
     {
       "inputs": [],
       "name": "RefundFailed",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint8",
+          "name": "bits",
+          "type": "uint8"
+        },
+        {
+          "internalType": "uint256",
+          "name": "value",
+          "type": "uint256"
+        }
+      ],
+      "name": "SafeCastOverflowedUintDowncast",
       "type": "error"
     },
     {
@@ -600,6 +706,141 @@
       "inputs": [
         {
           "indexed": true,
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes",
+          "name": "reason",
+          "type": "bytes"
+        }
+      ],
+      "name": "OrderCancelled",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "int256",
+          "name": "sizeDelta",
+          "type": "int256"
+        },
+        {
+          "indexed": false,
+          "internalType": "int256",
+          "name": "marginDelta",
+          "type": "int256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "acceptablePrice",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "bool",
+          "name": "reduceOnly",
+          "type": "bool"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "keeperFee",
+          "type": "uint256"
+        }
+      ],
+      "name": "OrderCommitted",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "minDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "maxDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "keeperFee",
+              "type": "uint256"
+            }
+          ],
+          "indexed": false,
+          "internalType": "struct PerpExchange.OrderConfig",
+          "name": "config",
+          "type": "tuple"
+        }
+      ],
+      "name": "OrderConfigUpdated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "keeper",
+          "type": "address"
+        }
+      ],
+      "name": "OrderExecuted",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
           "internalType": "address",
           "name": "previousOwner",
           "type": "address"
@@ -871,6 +1112,29 @@
     {
       "inputs": [
         {
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "priceUpdate",
+          "type": "bytes[]"
+        }
+      ],
+      "name": "addMargin",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
           "internalType": "address",
           "name": "",
           "type": "address"
@@ -895,19 +1159,14 @@
           "type": "uint256"
         },
         {
-          "internalType": "uint256",
-          "name": "acceptablePrice",
-          "type": "uint256"
-        },
-        {
-          "internalType": "bytes[]",
-          "name": "priceUpdate",
-          "type": "bytes[]"
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
         }
       ],
-      "name": "closePosition",
+      "name": "cancelOrder",
       "outputs": [],
-      "stateMutability": "payable",
+      "stateMutability": "nonpayable",
       "type": "function"
     },
     {
@@ -934,6 +1193,39 @@
         }
       ],
       "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "int256",
+          "name": "sizeDelta",
+          "type": "int256"
+        },
+        {
+          "internalType": "int256",
+          "name": "marginDelta",
+          "type": "int256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "acceptablePrice",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "reduceOnly",
+          "type": "bool"
+        }
+      ],
+      "name": "commitOrder",
+      "outputs": [],
+      "stateMutability": "nonpayable",
       "type": "function"
     },
     {
@@ -1014,6 +1306,29 @@
       "name": "deposit",
       "outputs": [],
       "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "priceUpdate",
+          "type": "bytes[]"
+        }
+      ],
+      "name": "executeOrder",
+      "outputs": [],
+      "stateMutability": "payable",
       "type": "function"
     },
     {
@@ -1400,6 +1715,84 @@
     {
       "inputs": [
         {
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        }
+      ],
+      "name": "getOrders",
+      "outputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "marketId",
+              "type": "uint256"
+            },
+            {
+              "internalType": "string",
+              "name": "symbol",
+              "type": "string"
+            },
+            {
+              "components": [
+                {
+                  "internalType": "int256",
+                  "name": "sizeDelta",
+                  "type": "int256"
+                },
+                {
+                  "internalType": "int256",
+                  "name": "marginDelta",
+                  "type": "int256"
+                },
+                {
+                  "internalType": "uint256",
+                  "name": "acceptablePrice",
+                  "type": "uint256"
+                },
+                {
+                  "internalType": "uint128",
+                  "name": "keeperFee",
+                  "type": "uint128"
+                },
+                {
+                  "internalType": "uint64",
+                  "name": "commitTime",
+                  "type": "uint64"
+                },
+                {
+                  "internalType": "bool",
+                  "name": "reduceOnly",
+                  "type": "bool"
+                }
+              ],
+              "internalType": "struct PerpExchange.Order",
+              "name": "order",
+              "type": "tuple"
+            },
+            {
+              "internalType": "uint256",
+              "name": "executableAt",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "expiresAt",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct PerpExchange.OrderView[]",
+          "name": "out",
+          "type": "tuple[]"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
           "internalType": "uint256",
           "name": "marketId",
           "type": "uint256"
@@ -1668,12 +2061,56 @@
       "type": "function"
     },
     {
+      "inputs": [],
+      "name": "oracle",
+      "outputs": [
+        {
+          "internalType": "contract IPriceOracle",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "orderConfig",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "minDelay",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "maxDelay",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "keeperFee",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
       "inputs": [
         {
           "internalType": "uint256",
-          "name": "marketId",
+          "name": "",
           "type": "uint256"
         },
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "orders",
+      "outputs": [
         {
           "internalType": "int256",
           "name": "sizeDelta",
@@ -1690,24 +2127,19 @@
           "type": "uint256"
         },
         {
-          "internalType": "bytes[]",
-          "name": "priceUpdate",
-          "type": "bytes[]"
-        }
-      ],
-      "name": "modifyPosition",
-      "outputs": [],
-      "stateMutability": "payable",
-      "type": "function"
-    },
-    {
-      "inputs": [],
-      "name": "oracle",
-      "outputs": [
+          "internalType": "uint128",
+          "name": "keeperFee",
+          "type": "uint128"
+        },
         {
-          "internalType": "contract IPriceOracle",
-          "name": "",
-          "type": "address"
+          "internalType": "uint64",
+          "name": "commitTime",
+          "type": "uint64"
+        },
+        {
+          "internalType": "bool",
+          "name": "reduceOnly",
+          "type": "bool"
         }
       ],
       "stateMutability": "view",
@@ -1909,6 +2341,61 @@
     {
       "inputs": [
         {
+          "internalType": "uint256",
+          "name": "marketId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address",
+          "name": "trader",
+          "type": "address"
+        },
+        {
+          "components": [
+            {
+              "internalType": "int256",
+              "name": "sizeDelta",
+              "type": "int256"
+            },
+            {
+              "internalType": "int256",
+              "name": "marginDelta",
+              "type": "int256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "acceptablePrice",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint128",
+              "name": "keeperFee",
+              "type": "uint128"
+            },
+            {
+              "internalType": "uint64",
+              "name": "commitTime",
+              "type": "uint64"
+            },
+            {
+              "internalType": "bool",
+              "name": "reduceOnly",
+              "type": "bool"
+            }
+          ],
+          "internalType": "struct PerpExchange.Order",
+          "name": "o",
+          "type": "tuple"
+        }
+      ],
+      "name": "selfExecuteOrder",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
           "components": [
             {
               "internalType": "uint256",
@@ -2028,6 +2515,36 @@
         }
       ],
       "name": "setOracle",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "uint256",
+              "name": "minDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "maxDelay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "keeperFee",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct PerpExchange.OrderConfig",
+          "name": "config",
+          "type": "tuple"
+        }
+      ],
+      "name": "setOrderConfig",
       "outputs": [],
       "stateMutability": "nonpayable",
       "type": "function"

@@ -18,6 +18,9 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 ///
 ///  - Anyone deposits collateral (a USD stablecoin) into a trading account.
 ///  - Anyone opens leveraged long/short positions on any listed stock, with isolated margin.
+///    Trades are two-step: the trader commits an order, and after a short delay a keeper
+///    (anyone) executes it at an oracle price published *after* the commit, so traders can't
+///    trade against prices they already know.
 ///  - Anyone lists a new stock market by pointing at an oracle feed and paying a listing fee.
 ///  - Anyone provides liquidity to the shared vault, which is the counterparty to the
 ///    net open interest and earns trading fees, funding and trader losses.
@@ -85,6 +88,30 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         uint256 listingFee; // USD paid to the vault to list a market
     }
 
+    struct OrderConfig {
+        uint256 minDelay; // seconds after commit before an order can execute
+        uint256 maxDelay; // seconds after commit when an order expires
+        uint256 keeperFee; // USD paid by the trader to whoever executes or cancels the order
+    }
+
+    /// @dev A pending order. `commitTime == 0` means no order.
+    struct Order {
+        int256 sizeDelta;
+        int256 marginDelta; // positive amounts are escrowed from the account at commit
+        uint256 acceptablePrice;
+        uint128 keeperFee; // escrowed at commit
+        uint64 commitTime;
+        bool reduceOnly; // only shrink the position, clamped to its size at execution
+    }
+
+    struct OrderView {
+        uint256 marketId;
+        string symbol;
+        Order order;
+        uint256 executableAt;
+        uint256 expiresAt;
+    }
+
     struct MarketView {
         uint256 id;
         string symbol;
@@ -127,11 +154,13 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     IPriceOracle public oracle;
     RiskConfig public risk;
     MarketParams public defaultMarketParams;
+    OrderConfig public orderConfig;
 
     Market[] internal _markets;
     mapping(bytes32 => bool) public feedListed;
     mapping(uint256 => mapping(address => Position)) public positions;
     mapping(address => uint256) public balances;
+    mapping(uint256 => mapping(address => Order)) public orders;
 
     uint256 public vaultBalance;
     uint256 public totalSkewNotional;
@@ -159,6 +188,18 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         int256 fundingPaid,
         uint256 newMargin
     );
+    event OrderCommitted(
+        uint256 indexed marketId,
+        address indexed trader,
+        int256 sizeDelta,
+        int256 marginDelta,
+        uint256 acceptablePrice,
+        bool reduceOnly,
+        uint256 keeperFee
+    );
+    event OrderExecuted(uint256 indexed marketId, address indexed trader, address indexed keeper);
+    /// @param reason ABI-encoded revert data when execution failed; empty for expired orders.
+    event OrderCancelled(uint256 indexed marketId, address indexed trader, address indexed caller, bytes reason);
     event Liquidated(
         uint256 indexed marketId,
         address indexed trader,
@@ -174,6 +215,7 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     event RiskConfigUpdated(RiskConfig config);
     event DefaultMarketParamsUpdated(MarketParams params);
     event OracleUpdated(address oracle);
+    event OrderConfigUpdated(OrderConfig config);
 
     error ZeroAmount();
     error InsufficientBalance();
@@ -200,6 +242,15 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     error VaultInsolvent();
     error MinOutput();
     error InvalidParams();
+    error OrderPending();
+    error NoOrder();
+    error OrderNotReady(uint256 executableAt);
+    error OrderExpired();
+    error OrderNotExpired(uint256 expiresAt);
+    error PriceNotAfterCommit(uint256 publishTime, uint256 requiredTime);
+    error NothingToReduce();
+    error OnlySelf();
+    error ExecutionOutOfGas();
 
     // ---------------------------------------------------------------------
     // Construction
@@ -209,7 +260,8 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         IERC20Metadata _collateral,
         IPriceOracle _oracle,
         RiskConfig memory _risk,
-        MarketParams memory _defaultParams
+        MarketParams memory _defaultParams,
+        OrderConfig memory _orderConfig
     ) Ownable(msg.sender) {
         uint8 decimals = _collateral.decimals();
         if (decimals > 18) revert InvalidParams();
@@ -219,6 +271,7 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         _setRiskConfig(_risk);
         _validateParams(_defaultParams);
         defaultMarketParams = _defaultParams;
+        _setOrderConfig(_orderConfig);
     }
 
     // ---------------------------------------------------------------------
@@ -285,32 +338,122 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     // Trading
     // ---------------------------------------------------------------------
 
-    /// @notice Open, increase, reduce, flip or close a position and/or move margin.
+    /// @notice Step 1 of a trade: commit an order to open, increase, reduce, flip or close a
+    ///         position and/or withdraw margin. It executes after `orderConfig.minDelay` at a price
+    ///         published after the commit. Positive `marginDelta` and the keeper fee are escrowed
+    ///         from your account now and refunded if the order is cancelled.
     /// @param sizeDelta Units to buy (> 0) or sell (< 0).
     /// @param marginDelta Collateral to move from your account into the position (> 0) or back (< 0).
-    /// @param acceptablePrice Worst fill price: max for buys, min for sells.
-    /// @param priceUpdate Optional signed oracle updates (pull oracles). Send the update fee as msg.value.
-    function modifyPosition(
+    /// @param acceptablePrice Worst fill price: max for buys, min for sells. Worse fills cancel the order.
+    /// @param reduceOnly Only shrink the existing position (clamped to its size at execution).
+    function commitOrder(
         uint256 marketId,
         int256 sizeDelta,
         int256 marginDelta,
         uint256 acceptablePrice,
-        bytes[] calldata priceUpdate
-    ) external payable nonReentrant {
-        _updateOracle(priceUpdate);
-        _modifyPosition(msg.sender, marketId, sizeDelta, marginDelta, acceptablePrice);
+        bool reduceOnly
+    ) external nonReentrant {
+        Market storage m = _market(marketId);
+        if (sizeDelta == 0 && marginDelta == 0) revert NothingToDo();
+        if (orders[marketId][msg.sender].commitTime != 0) revert OrderPending();
+        if (reduceOnly) {
+            if (sizeDelta == 0 || marginDelta != 0) revert InvalidParams();
+        } else if (paused() || !m.active) {
+            // Fail fast on orders that add risk, which would only be rejected at execution.
+            int256 size = positions[marketId][msg.sender].size;
+            bool reducing = marginDelta >= 0
+                && (sizeDelta == 0
+                    || (size != 0 && (sizeDelta > 0) != (size > 0) && SignedMath.abs(sizeDelta) <= SignedMath.abs(size)));
+            if (!reducing) {
+                _requireNotPaused();
+                revert MarketNotActive();
+            }
+        }
+
+        uint256 keeperFee = orderConfig.keeperFee;
+        _debit(msg.sender, keeperFee + (marginDelta > 0 ? uint256(marginDelta) : 0));
+        orders[marketId][msg.sender] = Order({
+            sizeDelta: sizeDelta,
+            marginDelta: marginDelta,
+            acceptablePrice: acceptablePrice,
+            keeperFee: keeperFee.toUint128(),
+            commitTime: block.timestamp.toUint64(),
+            reduceOnly: reduceOnly
+        });
+        emit OrderCommitted(marketId, msg.sender, sizeDelta, marginDelta, acceptablePrice, reduceOnly, keeperFee);
     }
 
-    /// @notice Close your entire position in a market and return all margin to your account.
-    function closePosition(uint256 marketId, uint256 acceptablePrice, bytes[] calldata priceUpdate)
+    /// @notice Step 2 of a trade: execute a pending order. Anyone can call this and earns the
+    ///         order's keeper fee. Requires an oracle price published at least `minDelay` after
+    ///         the commit. If the order itself is invalid at that price (slippage, margin, caps,
+    ///         market closed for new risk) it is cancelled and its escrow refunded, minus the fee.
+    function executeOrder(uint256 marketId, address trader, bytes[] calldata priceUpdate)
         external
         payable
         nonReentrant
     {
         _updateOracle(priceUpdate);
-        int256 size = positions[marketId][msg.sender].size;
-        if (size == 0) revert NoPosition();
-        _modifyPosition(msg.sender, marketId, -size, 0, acceptablePrice);
+        Order memory o = orders[marketId][trader];
+        if (o.commitTime == 0) revert NoOrder();
+        OrderConfig memory cfg = orderConfig;
+        if (block.timestamp < o.commitTime + cfg.minDelay) revert OrderNotReady(o.commitTime + cfg.minDelay);
+        if (block.timestamp > o.commitTime + cfg.maxDelay) revert OrderExpired();
+
+        // Oracle problems are the keeper's to fix (revert), not a reason to cancel the order.
+        (, uint256 publishTime) = _freshPriceAndTime(_market(marketId).feedId);
+        if (publishTime < o.commitTime + cfg.minDelay) {
+            revert PriceNotAfterCommit(publishTime, o.commitTime + cfg.minDelay);
+        }
+
+        delete orders[marketId][trader];
+        if (o.marginDelta > 0) balances[trader] += uint256(o.marginDelta); // re-debited on success
+        try this.selfExecuteOrder(marketId, trader, o) {
+            emit OrderExecuted(marketId, trader, msg.sender);
+        } catch (bytes memory reason) {
+            // Out-of-gas reverts carry no data; don't let a keeper starve the call to force a cancel.
+            if (reason.length == 0) revert ExecutionOutOfGas();
+            emit OrderCancelled(marketId, trader, msg.sender, reason);
+        }
+        balances[msg.sender] += o.keeperFee;
+    }
+
+    /// @dev Runs an order's state changes so `executeOrder` can catch failures atomically.
+    function selfExecuteOrder(uint256 marketId, address trader, Order calldata o) external {
+        if (msg.sender != address(this)) revert OnlySelf();
+        int256 sizeDelta = o.sizeDelta;
+        if (o.reduceOnly) {
+            int256 size = positions[marketId][trader].size;
+            if (size == 0 || (sizeDelta > 0) == (size > 0)) revert NothingToReduce();
+            if (SignedMath.abs(sizeDelta) > SignedMath.abs(size)) sizeDelta = -size;
+        }
+        _modifyPosition(trader, marketId, sizeDelta, o.marginDelta, o.acceptablePrice);
+    }
+
+    /// @notice Cancel an order that expired without being executed. Anyone can call this; the
+    ///         keeper fee goes to the caller (or back to the trader if they cancel themselves).
+    ///         Unexpired orders can't be cancelled, so a commit is never a free option.
+    function cancelOrder(uint256 marketId, address trader) external nonReentrant {
+        Order memory o = orders[marketId][trader];
+        if (o.commitTime == 0) revert NoOrder();
+        uint256 expiresAt = o.commitTime + orderConfig.maxDelay;
+        if (block.timestamp <= expiresAt) revert OrderNotExpired(expiresAt);
+        delete orders[marketId][trader];
+        if (o.marginDelta > 0) balances[trader] += uint256(o.marginDelta);
+        balances[msg.sender] += o.keeperFee;
+        emit OrderCancelled(marketId, trader, msg.sender, "");
+    }
+
+    /// @notice Add margin to an open position immediately (e.g. to avoid liquidation). Adding
+    ///         margin only lowers risk, so it doesn't need the delayed-order flow.
+    function addMargin(uint256 marketId, uint256 amount, bytes[] calldata priceUpdate)
+        external
+        payable
+        nonReentrant
+    {
+        _updateOracle(priceUpdate);
+        if (amount == 0) revert ZeroAmount();
+        if (positions[marketId][msg.sender].size == 0) revert NoPosition();
+        _modifyPosition(msg.sender, marketId, 0, amount.toInt256(), 0);
     }
 
     /// @notice Liquidate a position whose equity is below maintenance margin. Anyone can call.
@@ -491,6 +634,21 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         for (uint256 i; i < n; ++i) out[i] = tmp[i];
     }
 
+    /// @notice All pending orders of `trader` across markets.
+    function getOrders(address trader) external view returns (OrderView[] memory out) {
+        uint256 n;
+        OrderView[] memory tmp = new OrderView[](_markets.length);
+        for (uint256 i; i < _markets.length; ++i) {
+            Order memory o = orders[i][trader];
+            if (o.commitTime == 0) continue;
+            tmp[n++] = OrderView(
+                i, _markets[i].symbol, o, o.commitTime + orderConfig.minDelay, o.commitTime + orderConfig.maxDelay
+            );
+        }
+        out = new OrderView[](n);
+        for (uint256 i; i < n; ++i) out[i] = tmp[i];
+    }
+
     /// @notice Quote the fill price for a trade at the current oracle price.
     function quoteFillPrice(uint256 marketId, int256 sizeDelta) external view returns (uint256) {
         Market storage m = _market(marketId);
@@ -543,13 +701,17 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         _setRiskConfig(config);
     }
 
+    function setOrderConfig(OrderConfig calldata config) external onlyOwner {
+        _setOrderConfig(config);
+    }
+
     function setOracle(IPriceOracle newOracle) external onlyOwner {
         oracle = newOracle;
         emit OracleUpdated(address(newOracle));
     }
 
     /// @notice Pausing blocks new risk (deposits, opening/increasing, listing, LP deposits).
-    ///         Withdrawals, closing, reducing and liquidations keep working.
+    ///         Withdrawals, closing, reducing, order execution and liquidations keep working.
     function pause() external onlyOwner {
         _pause();
     }
@@ -822,12 +984,16 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
-    function _freshPrice(bytes32 feedId) internal view returns (uint256) {
-        (uint256 price, uint256 conf, uint256 publishTime) = oracle.getPrice(feedId);
+    function _freshPrice(bytes32 feedId) internal view returns (uint256 price) {
+        (price,) = _freshPriceAndTime(feedId);
+    }
+
+    function _freshPriceAndTime(bytes32 feedId) internal view returns (uint256 price, uint256 publishTime) {
+        uint256 conf;
+        (price, conf, publishTime) = oracle.getPrice(feedId);
         if (price == 0) revert InvalidPrice();
         if (publishTime + risk.maxPriceAge < block.timestamp) revert StalePrice(feedId, publishTime);
         if (conf * WAD > price * risk.maxConfidenceRatio) revert PriceUncertain(feedId);
-        return price;
     }
 
     function _tryPrice(bytes32 feedId) internal view returns (uint256 price, uint256 publishTime, bool fresh) {
@@ -855,6 +1021,12 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
                 || p.maintenanceMargin * p.maxLeverage >= WAD * WAD || p.takerFee > WAD / 100 || p.skewScale == 0
                 || p.maxFundingRate > WAD / 10
         ) revert InvalidParams();
+    }
+
+    function _setOrderConfig(OrderConfig memory c) internal {
+        if (c.maxDelay <= c.minDelay || c.maxDelay > 1 hours || c.keeperFee > 50 * WAD) revert InvalidParams();
+        orderConfig = c;
+        emit OrderConfigUpdated(c);
     }
 
     function _setRiskConfig(RiskConfig memory c) internal {
