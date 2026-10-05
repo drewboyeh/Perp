@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserProvider, JsonRpcProvider, type JsonRpcSigner } from "ethers";
-import { CHAIN_ID, CHAIN_NAME, RPC_URL } from "../config";
+import { CHAIN_ID, CHAIN_NAME, EXPLORER_URL, RPC_URL } from "../config";
 
 export function useWallet() {
   const [account, setAccount] = useState<string>();
@@ -39,6 +39,7 @@ export function useWallet() {
             chainName: CHAIN_NAME,
             rpcUrls: [RPC_URL],
             nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            ...(EXPLORER_URL ? { blockExplorerUrls: [EXPLORER_URL] } : {}),
           },
         ],
       });

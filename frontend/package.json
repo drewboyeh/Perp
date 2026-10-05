@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "dev:base-sepolia": "vite --mode base-sepolia",
+    "build:base-sepolia": "tsc -b && vite build --mode base-sepolia"
   },
   "dependencies": {
     "ethers": "^6.17.0",

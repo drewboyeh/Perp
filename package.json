@@ -13,7 +13,10 @@
     "feeder:local": "hardhat run scripts/price-feeder.js --network localhost",
     "keeper:local": "hardhat run scripts/keeper.js --network localhost",
     "keeper": "hardhat run scripts/keeper.js",
-    "export-abi": "hardhat run scripts/export-abi.js"
+    "export-abi": "hardhat run scripts/export-abi.js",
+    "deploy:base-sepolia": "hardhat run scripts/deploy.js --network baseSepolia",
+    "list-markets:base-sepolia": "hardhat run scripts/list-markets.js --network baseSepolia",
+    "keeper:base-sepolia": "hardhat run scripts/keeper.js --network baseSepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

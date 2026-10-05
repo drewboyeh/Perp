@@ -69,7 +69,7 @@ export function AccountModal({ data, wallet, tx, onClose }: Props) {
       >
         {mode === "deposit" ? "Deposit" : "Withdraw"}
       </button>
-      {deployment?.oracleType === "mock" && (
+      {(deployment?.faucet ?? deployment?.oracleType === "mock") && (
         <button
           className="btn block ghost"
           disabled={tx.busy}
