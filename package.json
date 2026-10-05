@@ -1,0 +1,27 @@
+{
+  "name": "perp-stocks",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Permissionless perpetual futures on equities with leverage",
+  "license": "MIT",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy": "hardhat run scripts/deploy.js",
+    "feeder:local": "hardhat run scripts/price-feeder.js --network localhost",
+    "keeper:local": "hardhat run scripts/keeper.js --network localhost",
+    "keeper": "hardhat run scripts/keeper.js",
+    "export-abi": "hardhat run scripts/export-abi.js"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.29.1",
+    "solc": "^0.8.28"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.7.0",
+    "@pythnetwork/pyth-sdk-solidity": "^4.3.1"
+  }
+}
