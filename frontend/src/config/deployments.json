@@ -1,1 +1,10 @@
-{}
+{
+  "84532": {
+    "exchange": "0xd5B7e59f380dDaD3B8052F6523C653Cd9Ae93ED4",
+    "collateral": "0x9aF9FeDca0930EFE5B910f6FAa2860F210f0996e",
+    "oracle": "0xfda037d75D47886556B0C15E689555f2238193C5",
+    "oracleType": "pyth",
+    "faucet": true,
+    "startBlock": 47778695
+  }
+}
