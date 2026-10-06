@@ -15,7 +15,9 @@ export interface Deployment {
 
 export const CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID ?? 31337);
 export const RPC_URL: string = import.meta.env.VITE_RPC_URL ?? "http://127.0.0.1:8545";
-export const HERMES_URL: string = import.meta.env.VITE_HERMES_URL ?? "https://hermes.pyth.network";
+// Defaults to the dev/preview server's /hermes proxy, which adds the Pyth API key (vite.config.ts).
+// A static build needs VITE_HERMES_URL pointing at a proxy that does the same.
+export const HERMES_URL: string = import.meta.env.VITE_HERMES_URL ?? "/hermes";
 export const EXPLORER_URL: string | undefined = import.meta.env.VITE_EXPLORER_URL;
 export const CHAIN_NAME: string = import.meta.env.VITE_CHAIN_NAME ?? (CHAIN_ID === 31337 ? "Localhost" : `Chain ${CHAIN_ID}`);
 

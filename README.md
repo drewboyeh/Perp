@@ -114,9 +114,11 @@ The testnet deployment uses live [Pyth](https://pyth.network) US equity prices (
 **Prerequisites**
 - A **fresh, throwaway** deployer key funded with a little Base Sepolia ETH (0.05 is plenty) from any Base Sepolia faucet. It becomes the contracts' owner.
 - Network access to `sepolia.base.org` (or set `BASE_SEPOLIA_RPC_URL`) and `hermes.pyth.network`.
+- A Pyth API key. Since Pyth's Core upgrade (Aug 2026), Hermes answers `401 unauthorized` to price-update requests without one. Get it from a Pyth Terminal account. The scripts and the UI's dev server read it from `PYTH_API_KEY`.
 
 ```bash
 export DEPLOYER_PRIVATE_KEY=0x...        # never commit this
+export PYTH_API_KEY=...                  # never commit this either
 npm run deploy:base-sepolia
 ```
 
@@ -149,7 +151,7 @@ npm run dev:base-sepolia      # local dev against Base Sepolia
 npm run build:base-sepolia    # static build in frontend/dist, host anywhere
 ```
 
-Settings live in `frontend/.env.base-sepolia`.
+Settings live in `frontend/.env.base-sepolia`. The UI fetches Pyth prices through `/hermes` on the Vite dev/preview server, which adds `PYTH_API_KEY` server-side so the key never reaches the browser. Export `PYTH_API_KEY` before `npm run dev:base-sepolia`. A static build has no such proxy: host one that adds the key and point `VITE_HERMES_URL` at it.
 
 **Other chains / real USDC.** Set `PYTH_ADDRESS` (see Pyth's contract-address docs) and optionally `COLLATERAL_ADDRESS` (e.g. real USDC, which turns off the faucet and the vault seeding). Then run `npx hardhat run scripts/deploy.js --network custom` with `RPC_URL` set. In the UI, **+ List a stock** searches Pyth for any covered equity.
 
