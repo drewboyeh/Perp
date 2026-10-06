@@ -1,8 +1,13 @@
 // Pyth Hermes price service: signed price updates and equity feed lookup.
+// Hermes requires an API key for price updates (Pyth Terminal); set PYTH_API_KEY.
 const HERMES_URL = process.env.HERMES_URL || "https://hermes.pyth.network";
+const { PYTH_API_KEY } = process.env;
 
 async function getJson(path) {
-  const res = await fetch(`${HERMES_URL}${path}`);
+  const headers = PYTH_API_KEY ? { Authorization: `Bearer ${PYTH_API_KEY}` } : {};
+  // Never follow a redirect: it could forward the key to another host.
+  const res = await fetch(`${HERMES_URL}${path}`, { headers, redirect: "error" });
+  if (res.status === 401 && !PYTH_API_KEY) throw new Error("Hermes 401: set PYTH_API_KEY to a Pyth API key");
   if (!res.ok) throw new Error(`Hermes ${res.status}: ${await res.text()}`);
   return res.json();
 }
