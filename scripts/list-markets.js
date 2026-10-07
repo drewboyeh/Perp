@@ -1,10 +1,13 @@
-// Lists Pyth-backed stock markets on an existing deployment. Run during US market hours (listing
-// needs a fresh price). Tickers default to the seed set; override with TICKERS=COIN,PLTR,...
+// Lists stock markets on an existing deployment. Run during US market hours (listing needs a fresh
+// price). Tickers default to the seed set; override with TICKERS=COIN,PLTR,...
+// Pyth deployments list Pyth equity feeds; MockOracle deployments list at live quotes from
+// scripts/lib/quotes.js (the signer must be an oracle reporter).
 // Listing fees come from the caller's trading account; with a faucet collateral token the
 // shortfall is minted and deposited automatically.
 const hre = require("hardhat");
 const { readDeployment } = require("./lib/deployments");
 const { DEFAULT_TICKERS, listPythMarkets } = require("./lib/pyth-markets");
+const { listQuotedMarkets } = require("./lib/quote-markets");
 
 const { ethers } = hre;
 
@@ -12,7 +15,6 @@ async function main() {
   const [signer] = await ethers.getSigners();
   const { chainId } = await ethers.provider.getNetwork();
   const d = readDeployment(chainId);
-  if (d.oracleType !== "pyth") throw new Error("list-markets is for Pyth deployments");
   const exchange = await ethers.getContractAt("PerpExchange", d.exchange, signer);
   const tickers = process.env.TICKERS ? process.env.TICKERS.split(",").map((t) => t.trim().toUpperCase()) : DEFAULT_TICKERS;
 
@@ -28,7 +30,10 @@ async function main() {
     await (await exchange.deposit(amount)).wait();
   }
 
-  const listed = await listPythMarkets(exchange, tickers);
+  const listed =
+    d.oracleType === "pyth"
+      ? await listPythMarkets(exchange, tickers)
+      : await listQuotedMarkets(exchange, await ethers.getContractAt("MockOracle", d.oracle, signer), tickers);
   console.log(`Listed ${listed.length} market(s): ${listed.join(", ") || "none"}`);
 }
 

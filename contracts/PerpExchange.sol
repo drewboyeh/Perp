@@ -25,6 +25,7 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 ///  - Anyone provides liquidity to the shared vault, which is the counterparty to the
 ///    net open interest and earns trading fees, funding and trader losses.
 ///  - Anyone liquidates unhealthy positions for a reward.
+///  - Optionally, a share of trading fees goes to a protocol treasury's trading account.
 ///
 /// Positions are priced off the oracle. A skew-based premium is applied to fills so trades
 /// that grow the long/short imbalance pay more, and funding flows from the heavier side.
@@ -41,6 +42,7 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public constant MAX_MARKETS = 200;
     uint256 internal constant VIRTUAL_SHARES = 1e6;
     uint256 internal constant VIRTUAL_ASSETS = 1;
+    uint256 public constant MAX_PROTOCOL_FEE_SHARE = 0.5e18;
 
     // ---------------------------------------------------------------------
     // Types
@@ -163,6 +165,9 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     mapping(uint256 => mapping(address => Order)) public orders;
 
     uint256 public vaultBalance;
+    /// @notice Receives `protocolFeeShare` of every trading fee, credited to its trading account.
+    address public treasury;
+    uint256 public protocolFeeShare; // WAD fraction of trading fees, the rest goes to the vault
     uint256 public totalSkewNotional;
     uint256 public totalLpShares;
     mapping(address => uint256) public lpShares;
@@ -216,6 +221,7 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
     event DefaultMarketParamsUpdated(MarketParams params);
     event OracleUpdated(address oracle);
     event OrderConfigUpdated(OrderConfig config);
+    event ProtocolFeeUpdated(address treasury, uint256 share);
 
     error ZeroAmount();
     error InsufficientBalance();
@@ -705,6 +711,15 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
         _setOrderConfig(config);
     }
 
+    /// @notice Sends `share` (WAD, at most 50%) of every trading fee to `treasury`'s trading account,
+    ///         which withdraws it like any other balance. A zero share sends all fees to the vault.
+    function setProtocolFee(address newTreasury, uint256 share) external onlyOwner {
+        if (share > MAX_PROTOCOL_FEE_SHARE || (share > 0 && newTreasury == address(0))) revert InvalidParams();
+        treasury = newTreasury;
+        protocolFeeShare = share;
+        emit ProtocolFeeUpdated(newTreasury, share);
+    }
+
     function setOracle(IPriceOracle newOracle) external onlyOwner {
         oracle = newOracle;
         emit OracleUpdated(address(newOracle));
@@ -787,7 +802,9 @@ contract PerpExchange is Ownable2Step, ReentrancyGuard, Pausable {
 
             fee = _notional(sizeDelta, fillPrice) * m.params.takerFee / WAD;
             margin -= fee.toInt256();
-            vaultBalance += fee;
+            uint256 protocolFee = fee * protocolFeeShare / WAD;
+            if (protocolFee > 0) balances[treasury] += protocolFee;
+            vaultBalance += fee - protocolFee;
 
             _updateOpenInterest(m, pos.size, newSize);
         }

@@ -26,7 +26,7 @@ frontend/             React + Vite + ethers trading UI
 
 ## How it works
 
-**Counterparty: one shared liquidity vault.** Trades execute against the vault at the oracle price rather than an order book. LPs take the other side of the traders' *net* exposure. They earn trading fees, listing fees, funding paid by the crowded side, and trader losses; they pay out trader profits. Vault NAV is `cash − traders' unrealized PnL − traders' accrued funding`. The contract tracks per-market aggregates (net size, Σ size·entry, Σ size·fundingIndex), so NAV costs O(markets), not O(positions).
+**Counterparty: one shared liquidity vault.** Trades execute against the vault at the oracle price rather than an order book. LPs take the other side of the traders' *net* exposure. They earn trading fees (minus the protocol's share, below), listing fees, funding paid by the crowded side, and trader losses; they pay out trader profits. Vault NAV is `cash − traders' unrealized PnL − traders' accrued funding`. The contract tracks per-market aggregates (net size, Σ size·entry, Σ size·fundingIndex), so NAV costs O(markets), not O(positions).
 
 **Two-step orders.** Trades never fill at a price the trader could see when submitting:
 
@@ -57,11 +57,13 @@ Details:
 - LP deposits and withdrawals need fresh prices for every market with open interest, so nobody can trade the vault against stale weekend prices.
 - If the vault cannot cover a profit, the payout is haircut. The `ProfitHaircut` event records it; the contract never becomes insolvent.
 
-**Market hours.** Every trade, listing and liquidation needs an oracle price no older than `maxPriceAge` and within `maxConfidenceRatio`. Pyth equity feeds only publish while their market trades, so trading pauses on its own when the market closes. The UI shows these markets as "Market closed".
+**Market hours.** Every trade, listing and liquidation needs an oracle price no older than `maxPriceAge` and within `maxConfidenceRatio`. Pyth equity feeds, and the testnet stock feeder, only publish while the market trades, so trading pauses on its own when the market closes. The UI shows these markets as "Market closed".
 
 **Pull oracle.** With Pyth, each state-changing call accepts `bytes[] priceUpdate` and the update fee as `msg.value`. Any excess ETH is refunded. The UI and keeper fetch signed updates from Pyth Hermes.
 
-**Admin (owner).** The owner can tune per-market and default parameters, switch markets to close-only, pause new risk, and change the oracle. Pausing never blocks withdrawals, closing, reducing, or liquidations. Ownership uses `Ownable2Step`. In production the owner should be a multisig behind a timelock.
+**Protocol fee.** A share of every trading fee (`protocolFeeShare`, at most 50%; the deploy script sets 20%) is credited to the `treasury` address's trading account, which withdraws it like any balance. The rest goes to the vault. The owner sets both with `setProtocolFee`; a zero share sends all fees to LPs.
+
+**Admin (owner).** The owner can tune per-market and default parameters, switch markets to close-only, pause new risk, change the oracle, and set the protocol fee. Pausing never blocks withdrawals, closing, reducing, or liquidations. Ownership uses `Ownable2Step`. In production the owner should be a multisig behind a timelock.
 
 ### Default parameters (local deploy)
 
@@ -76,10 +78,11 @@ Details:
 | Min position margin | $10 |
 | Max vault utilization | 100% of vault cash |
 | Listing fee | $100 |
-| Max price age | 300s local, 60s Pyth |
-| LP lockup | 60s local, 24h Pyth |
-| Order delay (min / expiry) | 1s / 120s local, 2s / 60s Pyth |
+| Max price age | 300s local, 60s testnet |
+| LP lockup | 60s local, 24h testnet |
+| Order delay (min / expiry) | 1s / 120s local, 2s / 90s testnet (2s / 60s with Pyth) |
 | Keeper fee | $0.50 per order |
+| Protocol fee | 20% of trading fees to the treasury (default: the deployer) |
 
 ## Quick start (local)
 
@@ -87,7 +90,7 @@ Requires Node 18+.
 
 ```bash
 npm install
-npm test                      # 44 tests incl. randomized solvency invariant
+npm test                      # 46 tests incl. randomized solvency invariant
 
 # terminal 1: local chain
 npm run node
@@ -107,41 +110,47 @@ In your wallet, add network `http://127.0.0.1:8545` (chain id 31337) and import 
 
 To list a new stock in dev mode, click **+ List a stock**, enter a ticker and a starting price. The feeder picks it up automatically.
 
-## Deploying to Base Sepolia (testnet, real Pyth prices)
+## Deploying to Base Sepolia (testnet, live stock prices)
 
-The testnet deployment uses live [Pyth](https://pyth.network) US equity prices (e.g. `Equity.US.AAPL/USD`) and a faucet test-USDC as collateral, so anyone can fund themselves.
+The testnet deployment uses a faucet test-USDC as collateral, so anyone can fund themselves. Prices come from free market-data APIs: a feeder you run pushes live US stock quotes into a `MockOracle` that only your reporter address can write to.
+
+> Pyth's Hermes now needs a paid API key, and US equities are on its Pyth Pro plans, so the free path is the default. `ORACLE=pyth` with `PYTH_API_KEY` still deploys the Pyth version (see below). With the push oracle you are trusted to report honest prices: fine for a testnet, not for real money.
 
 **Prerequisites**
-- A **fresh, throwaway** deployer key funded with a little Base Sepolia ETH (0.05 is plenty) from any Base Sepolia faucet. It becomes the contracts' owner.
-- Network access to `sepolia.base.org` (or set `BASE_SEPOLIA_RPC_URL`) and `hermes.pyth.network`.
-- A Pyth API key. Since Pyth's Core upgrade (Aug 2026), Hermes answers `401 unauthorized` to price-update requests without one. Get it from a Pyth Terminal account. The scripts and the UI's dev server read it from `PYTH_API_KEY`.
+- A **fresh, throwaway** deployer key funded with Base Sepolia ETH from any faucet. It becomes the contracts' owner, the oracle reporter and, by default, the protocol fee treasury. The feeder pushes a transaction every ~20s during market hours, so keep it topped up.
+- A free [Finnhub](https://finnhub.io) API key (real-time US quotes, 60 requests/min). Optionally a free [Alpaca](https://alpaca.markets) key pair as a backup source.
 
 ```bash
-export DEPLOYER_PRIVATE_KEY=0x...        # never commit this
-export PYTH_API_KEY=...                  # never commit this either
+export DEPLOYER_PRIVATE_KEY=0x...        # never commit these
+export FINNHUB_API_KEY=...
 npm run deploy:base-sepolia
 ```
 
-The script:
-- checks the Base Sepolia Pyth contract on-chain;
-- deploys `MockUSDC` (faucet), `PythOracle` and `PerpExchange`;
-- seeds the vault with 2,000,000 test USDC;
-- lists 10 stocks from Pyth feeds;
-- writes the addresses to `frontend/src/config/deployments.json`. Commit that file so the UI knows the deployment.
+The script deploys `MockUSDC` (faucet), `MockOracle` and `PerpExchange`, sets the protocol fee (`PROTOCOL_FEE_SHARE`, default 0.2, to `TREASURY_ADDRESS`, default the deployer), seeds the vault with 2,000,000 test USDC, lists 10 stocks at live quotes, and writes the addresses to `frontend/src/config/deployments.json`. Commit that file so the UI knows the deployment.
 
-Listing needs a fresh price, so stocks only list during US market hours (9:30–16:00 ET, Mon–Fri); closed ones are skipped. Re-run later to list them; this is safe to repeat:
+Listing needs a fresh quote, so stocks only list during US market hours (9:30–16:00 ET, Mon–Fri); closed ones are skipped. Re-run later to list them; this is safe to repeat:
 
 ```bash
 npm run list-markets:base-sepolia                    # or TICKERS=COIN,PLTR npm run list-markets:base-sepolia
 ```
 
-**Keeper.** Run it on any always-on machine with a funded key. It fills orders (earning keeper fees), cancels expired ones, liquidates, and pushes fresh Pyth prices on-chain every 30s while markets trade (Pyth is a pull oracle, so on-chain prices otherwise go stale):
+On testnets only the operator lists stocks this way: the oracle doesn't let strangers set a first price, since a made-up listing price could be traded against the vault.
+
+**Feeder and keeper.** Run both on an always-on machine with the same environment variables:
 
 ```bash
-npm run keeper:base-sepolia
+npm run feeder:base-sepolia    # pushes live prices for every listed market while the market is open
+npm run keeper:base-sepolia    # fills orders (earning keeper fees), cancels expired ones, liquidates
 ```
 
-Without a keeper the app still works: it shows live prices straight from Pyth, and traders can execute their own orders from **Pending orders**.
+Without the feeder, prices go stale within 60s and trading pauses. The feeder:
+- tries `PRICE_SOURCES` in order for each ticker (default `finnhub`, then `alpaca` when `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` are set); override one ticker with e.g. `PRICE_SOURCES_TSLA=alpaca,finnhub`;
+- only uses quotes younger than 120s, and by default only pushes 9:30–16:00 ET (`FEEDER_HOURS=any` includes extended hours);
+- holds a quote that jumps more than 15% from a still-fresh on-chain price (`FEEDER_MAX_JUMP`), until that price goes stale.
+
+To run the feeder with a different key than the deployer's, allow it as a reporter first: `REPORTER=0x... npx hardhat run scripts/set-reporter.js --network baseSepolia` (run as the owner).
+
+Free market-data tiers are for personal use; check the provider's terms before showing their prices publicly.
 
 **Frontend.**
 
@@ -151,9 +160,11 @@ npm run dev:base-sepolia      # local dev against Base Sepolia
 npm run build:base-sepolia    # static build in frontend/dist, host anywhere
 ```
 
-Settings live in `frontend/.env.base-sepolia`. The UI fetches Pyth prices through `/hermes` on the Vite dev/preview server, which adds `PYTH_API_KEY` server-side so the key never reaches the browser. Export `PYTH_API_KEY` before `npm run dev:base-sepolia`. A static build has no such proxy: host one that adds the key and point `VITE_HERMES_URL` at it.
+Settings live in `frontend/.env.base-sepolia`.
 
-**Other chains / real USDC.** Set `PYTH_ADDRESS` (see Pyth's contract-address docs) and optionally `COLLATERAL_ADDRESS` (e.g. real USDC, which turns off the faucet and the vault seeding). Then run `npx hardhat run scripts/deploy.js --network custom` with `RPC_URL` set. In the UI, **+ List a stock** searches Pyth for any covered equity.
+**Pyth instead (paid).** `ORACLE=pyth` deploys a `PythOracle` and lists Pyth equity feeds. Hermes requires an API key with US equity access (`PYTH_API_KEY`), which the scripts send as a Bearer token. The UI fetches Pyth prices through `/hermes` on the Vite dev/preview server, which adds `PYTH_API_KEY` server-side so the key never reaches the browser; a static build needs `VITE_HERMES_URL` pointing at a proxy that does the same. The keeper also pushes Pyth prices on-chain every 30s while markets trade.
+
+**Other chains / real USDC.** Set `PYTH_ADDRESS` (see Pyth's contract-address docs) and optionally `COLLATERAL_ADDRESS` (e.g. real USDC, which turns off the faucet and the vault seeding). Then run `ORACLE=pyth npx hardhat run scripts/deploy.js --network custom` with `RPC_URL` set.
 
 ## Tests
 
@@ -168,9 +179,9 @@ npm test
 - **Funding:** accrual and settlement.
 - **Delayed orders:** escrow and keeper fee, `OrderNotReady`, `PriceNotAfterCommit` (the fill uses the newer price), one order per market, rejected orders refund escrow and still pay the keeper, no cancelling before expiry, expired orders can't execute, reduce-only clamping and no flip after liquidation, instant `addMargin` while paused, self-call guard, config validation.
 - **Liquidations:** liquidation price, rewards, bad debt, blocking underwater closes.
-- **Vault:** fee accrual, NAV marking, lockup, utilization caps, OI caps.
+- **Vault and protocol fee:** fee accrual, the treasury/vault fee split and its owner-only cap, NAV marking, lockup, utilization caps, OI caps.
 - **Pyth integration:** expo normalization, in-tx updates, fee refund, confidence check, and an order that only fills once a keeper submits a post-commit price (against Pyth's `MockPyth`).
-- **Solvency invariant:** 3 seeded random runs of trades, orders left pending to execute late, fail or expire, price shocks, time jumps and liquidations. Order escrow counts toward the balance check. After every step, `token balance == Σ accounts + Σ margins + vault cash` holds exactly, and after unwinding, every aggregate returns to zero.
+- **Solvency invariant:** 3 seeded random runs of trades, orders left pending to execute late, fail or expire, price shocks, time jumps and liquidations. Order escrow counts toward the balance check. With a 30% protocol fee on, after every step `token balance == Σ accounts (incl. the treasury) + Σ margins + vault cash` holds exactly, and after unwinding, every aggregate returns to zero.
 
 Contracts compile with the npm-pinned `solc` 0.8.28 (`viaIR`), so builds work offline.
 

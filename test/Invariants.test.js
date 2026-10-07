@@ -36,6 +36,7 @@ describe("Solvency invariant (randomized)", function () {
         { ...DEFAULT_PARAMS, skewScale: usd(5_000_000), maxFundingRate: usd("0.05") },
         { minDelay: 2n, maxDelay: 600n, keeperFee: usd("0.5") },
       ]);
+      await exchange.setProtocolFee(owner.address, usd("0.3")); // treasury = owner, counted below
       const everyone = [owner, lp, keeper, ...traders];
       for (const s of everyone) {
         await token.mint(s.address, usdc(1_000_000));

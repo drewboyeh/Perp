@@ -336,6 +336,42 @@ describe("PerpExchange", function () {
       expect(await exchange.lpSharePrice()).to.be.gt(before);
     });
 
+    it("splits trading fees between the protocol treasury and the vault", async function () {
+      const { exchange, alice, carol } = await loadFixture(deployFixture);
+      await exchange.setProtocolFee(carol.address, usd("0.25"));
+      await exchange.connect(alice).deposit(usdc(10_000));
+      const vaultBefore = await exchange.vaultBalance();
+      const rc = await trade(exchange, alice, AAPL, usd(100), usd(5000));
+      const { fee } = eventArgs(rc, exchange, "PositionModified");
+      expect(fee).to.be.gt(0n);
+      expect(await exchange.balances(carol.address)).to.equal(fee / 4n);
+      expect(await exchange.vaultBalance()).to.equal(vaultBefore + fee - fee / 4n);
+      // The treasury withdraws its share like any trading balance, even while paused.
+      await exchange.pause();
+      await exchange.connect(carol).withdraw(fee / 4n / 10n ** 12n);
+    });
+
+    it("restricts protocol fee settings to the owner and caps the share at 50%", async function () {
+      const { exchange, alice, carol } = await loadFixture(deployFixture);
+      await expect(exchange.connect(alice).setProtocolFee(alice.address, usd("0.1"))).to.be.revertedWithCustomError(
+        exchange,
+        "OwnableUnauthorizedAccount",
+      );
+      await expect(exchange.setProtocolFee(carol.address, usd("0.51"))).to.be.revertedWithCustomError(
+        exchange,
+        "InvalidParams",
+      );
+      await expect(exchange.setProtocolFee(ethers.ZeroAddress, usd("0.1"))).to.be.revertedWithCustomError(
+        exchange,
+        "InvalidParams",
+      );
+      await expect(exchange.setProtocolFee(carol.address, usd("0.5")))
+        .to.emit(exchange, "ProtocolFeeUpdated")
+        .withArgs(carol.address, usd("0.5"));
+      await exchange.setProtocolFee(ethers.ZeroAddress, 0);
+      expect(await exchange.protocolFeeShare()).to.equal(0n);
+    });
+
     it("marks open trader PnL into NAV", async function () {
       const { exchange, oracle, alice } = await loadFixture(deployFixture);
       await exchange.connect(alice).deposit(usdc(10_000));
