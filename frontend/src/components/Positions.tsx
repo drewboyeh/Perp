@@ -6,6 +6,7 @@ import { WAD, fmtNum, fmtPrice, fmtSignedUsd, fmtUsd, parseWad, toNum } from "..
 import { abs, withSlippage } from "../lib/math";
 import { addMargin, cancelOrder, deposit, executeOrder } from "../lib/actions";
 import { submitOrder } from "../lib/submitOrder";
+import { displaySymbol } from "../lib/markets";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -69,7 +70,7 @@ export function Positions({ data, wallet, tx, onSelect }: Props) {
                   <tr key={p.marketId} className={p.liquidatable ? "danger" : ""}>
                     <td>
                       <button className="link" onClick={() => onSelect(p.marketId)}>
-                        {p.symbol}
+                        {displaySymbol(p.symbol)}
                       </button>{" "}
                       <span className={`side-tag ${p.size > 0n ? "long" : "short"}`}>
                         {p.size > 0n ? "LONG" : "SHORT"}
@@ -194,7 +195,7 @@ function Orders({ orders, data, wallet, tx }: { orders: PendingOrder[]; data: Ex
                       : `≥ ${fmtPrice(o.acceptablePrice)}`;
               return (
                 <tr key={o.marketId}>
-                  <td>{o.symbol}</td>
+                  <td>{displaySymbol(o.symbol)}</td>
                   <td>
                     <span className={`side-tag ${d.cls}`}>{d.kind.toUpperCase()}</span>
                   </td>

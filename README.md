@@ -90,7 +90,7 @@ Requires Node 18+.
 
 ```bash
 npm install
-npm test                      # 46 tests incl. randomized solvency invariant
+npm test                      # 52 tests incl. randomized solvency invariant
 
 # terminal 1: local chain
 npm run node
@@ -152,6 +152,22 @@ To run the feeder with a different key than the deployer's, allow it as a report
 
 Free market-data tiers are for personal use; check the provider's terms before showing their prices publicly.
 
+**Private-company (pre-IPO) markets.** Synthetic perps on a reference price for private companies such as OpenAI, Anthropic, Stripe or ByteDance. Nobody trades the actual shares. On-chain symbols end in `-PRE` (e.g. `OPENAI-PRE`); the UI shows them as `OPENAI-PERP` with a Pre-IPO tag and a notice that the market is synthetic and unaffiliated.
+
+Reference prices come from `private-markets.json`, which you keep on the feeder machine and out of git (anyone who sees a new price before it reaches the chain can trade against the vault). Copy `private-markets.example.json`, fill in `price` and `asOf` (pick one price convention per market, e.g. implied valuation in $ billions), and list them:
+
+```bash
+cp private-markets.example.json private-markets.json   # then edit prices and dates
+TICKERS=OPENAI-PRE,ANTHROPIC-PRE npm run list-markets:base-sepolia
+```
+
+Because these prices update about once a day and can gap on a funding round:
+- they list with conservative parameters from their first block: 3x max leverage, 10% maintenance margin, 0.30% taker fee, $250k open-interest cap per side;
+- the feeder re-reads the file every round and stops pushing a price older than `PRIVATE_MAX_AGE_DAYS` (default 3), which pauses trading;
+- a price that moves more than `PRIVATE_MAX_JUMP` (default 20%) from the on-chain price is held, pausing the market, until you confirm it by setting `"confirmPrice"` to the same value.
+
+For a public launch, license your reference data (e.g. Forge Price) rather than copying it, and check each company's trademark position.
+
 **Frontend.**
 
 ```bash
@@ -179,6 +195,7 @@ npm test
 - **Funding:** accrual and settlement.
 - **Delayed orders:** escrow and keeper fee, `OrderNotReady`, `PriceNotAfterCommit` (the fill uses the newer price), one order per market, rejected orders refund escrow and still pay the keeper, no cancelling before expiry, expired orders can't execute, reduce-only clamping and no flip after liquidation, instant `addMargin` while paused, self-call guard, config validation.
 - **Liquidations:** liquidation price, rewards, bad debt, blocking underwater closes.
+- **Private markets:** missing, stale and future-dated reference prices are held, large moves wait for confirmation, listings start with conservative parameters and restore the defaults even when listing fails.
 - **Vault and protocol fee:** fee accrual, the treasury/vault fee split and its owner-only cap, NAV marking, lockup, utilization caps, OI caps.
 - **Pyth integration:** expo normalization, in-tx updates, fee refund, confidence check, and an order that only fills once a keeper submits a post-commit price (against Pyth's `MockPyth`).
 - **Solvency invariant:** 3 seeded random runs of trades, orders left pending to execute late, fail or expire, price shocks, time jumps and liquidations. Order escrow counts toward the balance check. With a 30% protocol fee on, after every step `token balance == Σ accounts (incl. the treasury) + Σ margins + vault cash` holds exactly, and after unwinding, every aggregate returns to zero.

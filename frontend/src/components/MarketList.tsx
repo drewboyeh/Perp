@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Market, PriceHistory } from "../hooks/useExchangeData";
 import { fmtPrice } from "../lib/format";
+import { displaySymbol, isPrivateMarket } from "../lib/markets";
 
 interface Props {
   markets: Market[];
@@ -31,13 +32,14 @@ export function MarketList({ markets, selected, onSelect, onList, history }: Pro
             <li key={m.id}>
               <button className={`market-row ${selected === m.id ? "selected" : ""}`} onClick={() => onSelect(m.id)}>
                 <span className="sym">
-                  {m.symbol}
+                  {displaySymbol(m.symbol)}
                   <span className="pair">-PERP</span>
                 </span>
                 <span className="px mono">{m.price ? fmtPrice(m.price) : "—"}</span>
                 <span className={`chg mono ${change > 0 ? "up" : change < 0 ? "down" : "muted"}`}>
                   {!m.priceFresh ? <span className="tag">closed</span> : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
                 </span>
+                {isPrivateMarket(m.symbol) && <span className="tag pre">Pre-IPO</span>}
               </button>
             </li>
           );

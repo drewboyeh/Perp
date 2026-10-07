@@ -19,6 +19,7 @@ const { writeDeployment, exportAbis } = require("./lib/deployments");
 const { DEFAULT_TICKERS, listPythMarkets } = require("./lib/pyth-markets");
 const { listQuotedMarkets } = require("./lib/quote-markets");
 const { sourcesFor } = require("./lib/quotes");
+const { loadPrivateMarkets } = require("./lib/private-markets");
 
 const { ethers } = hre;
 const usd = (n) => ethers.parseUnits(String(n), 18);
@@ -142,12 +143,14 @@ async function main() {
   await (await exchange.setProtocolFee(treasury, protocolFeeShare)).wait();
 
   const tickers = Object.keys(SEED_STOCKS);
+  // Live mock deployments also list the operator's private-company markets.
+  const toList = !usePyth && live ? [...DEFAULT_TICKERS, ...Object.keys(loadPrivateMarkets())] : tickers;
   if (faucet) {
     const token = await ethers.getContractAt("MockUSDC", collateralAddress);
-    await (await token.mint(deployer.address, SEED_LIQUIDITY + usdc(100 * tickers.length))).wait();
+    await (await token.mint(deployer.address, SEED_LIQUIDITY + usdc(100 * toList.length))).wait();
     await (await token.approve(exchangeAddress, ethers.MaxUint256)).wait();
     await (await exchange.addLiquidity(SEED_LIQUIDITY, 0, [])).wait();
-    await (await exchange.deposit(usdc(100 * tickers.length))).wait(); // listing fees
+    await (await exchange.deposit(usdc(100 * toList.length))).wait(); // listing fees
     console.log(`Seeded vault with ${ethers.formatUnits(SEED_LIQUIDITY, 6)} test USDC`);
   }
 
@@ -162,9 +165,10 @@ async function main() {
   } else if (faucet) {
     const listed = usePyth
       ? await listPythMarkets(exchange, DEFAULT_TICKERS)
-      : await listQuotedMarkets(exchange, oracle, DEFAULT_TICKERS);
-    if (listed.length < DEFAULT_TICKERS.length) {
-      console.log(`Listed ${listed.length}/${DEFAULT_TICKERS.length}. During US market hours run:`);
+      : await listQuotedMarkets(exchange, oracle, toList);
+    const wanted = usePyth ? DEFAULT_TICKERS.length : toList.length;
+    if (listed.length < wanted) {
+      console.log(`Listed ${listed.length}/${wanted}. During US market hours run:`);
       console.log(`  npx hardhat run scripts/list-markets.js --network ${hre.network.name}`);
     }
   }

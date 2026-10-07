@@ -5,6 +5,7 @@ import type { Tx } from "../hooks/useTx";
 import { WAD, fmtNum, fmtPrice, fmtUsd, parseWad, toNum } from "../lib/format";
 import { abs, liquidationPrice, notionalFor, sizeFor, withSlippage } from "../lib/math";
 import { submitOrder } from "../lib/submitOrder";
+import { displaySymbol } from "../lib/markets";
 
 interface Props {
   market: Market;
@@ -130,7 +131,7 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
         <div>
           <dt>Position size</dt>
           <dd className="mono">
-            {fmtNum(abs(o.size))} {market.symbol}
+            {fmtNum(abs(o.size))} {displaySymbol(market.symbol)}
           </dd>
         </div>
         <div>
@@ -185,7 +186,7 @@ export function OrderPanel({ market, data, wallet, tx }: Props) {
           ? disabledReason
           : !wallet.account
             ? "Connect wallet"
-            : `${side === "long" ? "Long" : "Short"} ${market.symbol} ${lev.toFixed(1)}x`}
+            : `${side === "long" ? "Long" : "Short"} ${displaySymbol(market.symbol)} ${lev.toFixed(1)}x`}
       </button>
     </aside>
   );

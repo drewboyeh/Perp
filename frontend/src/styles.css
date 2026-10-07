@@ -258,6 +258,12 @@ h2 {
   background: var(--panel-2);
   color: var(--muted);
 }
+.tag.pre {
+  margin-left: 8px;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
 .icon-btn {
   background: none;
   border: none;
@@ -384,6 +390,12 @@ h2 {
   text-align: right;
   font-size: 11px;
 }
+.market-row .tag.pre {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  margin-left: 0;
+}
 
 /* ---------- market header ---------- */
 
@@ -404,6 +416,10 @@ h2 {
 .mh-price {
   font-size: 26px;
   font-weight: 500;
+}
+.market-header .note {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 .status {
   font-size: 11px;

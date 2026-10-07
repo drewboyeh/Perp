@@ -1,17 +1,20 @@
 import type { Market } from "../hooks/useExchangeData";
 import { fmtCompactUsd, fmtPrice, toNum } from "../lib/format";
+import { displaySymbol, isPrivateMarket } from "../lib/markets";
 
 export function MarketHeader({ market, now }: { market: Market; now: number }) {
   const longUsd = (market.longOpenInterest * market.price) / 10n ** 18n;
   const shortUsd = (market.shortOpenInterest * market.price) / 10n ** 18n;
   const fundingDaily = toNum(market.fundingRate) * 100;
   const age = Math.max(0, now - market.publishTime);
+  const isPrivate = isPrivateMarket(market.symbol);
   return (
     <div className="panel market-header">
       <div className="mh-title">
         <h1>
-          {market.symbol}
+          {displaySymbol(market.symbol)}
           <span className="pair">-PERP</span>
+          {isPrivate && <span className="tag pre">Pre-IPO</span>}
         </h1>
         <span className={`status ${market.priceFresh ? "open" : "closed"}`}>
           {!market.active ? "Close-only" : market.priceFresh ? "Market open" : "Market closed"}
@@ -44,6 +47,13 @@ export function MarketHeader({ market, now }: { market: Market; now: number }) {
           <dd className="mono">{(toNum(market.params.takerFee) * 100).toFixed(2)}%</dd>
         </div>
       </dl>
+      {isPrivate && (
+        <p className="note">
+          Synthetic perpetual on a reference price for a private company, derived from private-market data and
+          updated about once a day. It can jump when the reference updates. You never own shares, and this market is
+          not affiliated with or endorsed by {displaySymbol(market.symbol)}.
+        </p>
+      )}
     </div>
   );
 }

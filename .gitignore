@@ -8,3 +8,4 @@ typechain-types/
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
+private-markets.json

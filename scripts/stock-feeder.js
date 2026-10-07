@@ -1,5 +1,7 @@
 // Price feeder for MockOracle deployments on testnets: pushes live US stock prices from free
-// market-data APIs (scripts/lib/quotes.js) for every listed market, including ones listed later.
+// market-data APIs (scripts/lib/quotes.js) for every listed market, including ones listed later,
+// and the operator's reference prices for private-company markets (scripts/lib/private-markets.js,
+// re-read every round so edits apply without a restart).
 // Run it next to the keeper. The signer must be an oracle reporter (see scripts/set-reporter.js).
 //
 //   FEEDER_INTERVAL_MS  push interval (default 20000; stretched to respect Finnhub's 60/min limit)
@@ -11,6 +13,7 @@ const hre = require("hardhat");
 const { readDeployment } = require("./lib/deployments");
 const { getQuote, usMarketOpen, sourcesFor } = require("./lib/quotes");
 const { toWad } = require("./lib/quote-markets");
+const { isPrivateSymbol, privatePrice } = require("./lib/private-markets");
 
 const { ethers } = hre;
 const INTERVAL_MS = Number(process.env.FEEDER_INTERVAL_MS || 20_000);
@@ -57,11 +60,21 @@ async function main() {
       closedLogged = false;
 
       const markets = await exchange.getMarkets();
-      wait = Math.max(INTERVAL_MS, markets.length * MS_PER_FINNHUB_CALL);
+      const stockCount = markets.filter((m) => !isPrivateSymbol(m.symbol)).length;
+      wait = Math.max(INTERVAL_MS, stockCount * MS_PER_FINNHUB_CALL);
       const feeds = [];
       const prices = [];
       const summary = [];
       for (const m of markets) {
+        if (isPrivateSymbol(m.symbol)) {
+          const r = privatePrice(m.symbol, m.price);
+          report(m.symbol, r.error);
+          if (r.error) continue;
+          feeds.push(m.feedId);
+          prices.push(r.price);
+          summary.push(`${m.symbol} ${ethers.formatUnits(r.price, 18)}`);
+          continue;
+        }
         const q = await getQuote(m.symbol);
         if (q.error) {
           report(m.symbol, `no fresh quote (${q.error})`);

@@ -1,0 +1,16 @@
+{
+  "_readme": [
+    "Reference prices for private-company (pre-IPO) markets. Copy to private-markets.json, which git ignores:",
+    "anyone who reads a new price before it reaches the chain can trade against the vault.",
+    "price: pick one convention per market and keep it, e.g. implied valuation in $ billions or a per-share price.",
+    "asOf: date of the price (YYYY-MM-DD). Prices older than PRIVATE_MAX_AGE_DAYS (default 3) stop trading.",
+    "confirmPrice: set equal to price to apply a move larger than PRIVATE_MAX_JUMP (default 20%).",
+    "Symbols must end in -PRE and be at most 16 characters. The feeder re-reads this file every round."
+  ],
+  "markets": {
+    "OPENAI-PRE": { "name": "OpenAI", "price": null, "asOf": null, "source": "" },
+    "ANTHROPIC-PRE": { "name": "Anthropic", "price": null, "asOf": null, "source": "" },
+    "STRIPE-PRE": { "name": "Stripe", "price": null, "asOf": null, "source": "" },
+    "BYTEDANCE-PRE": { "name": "ByteDance (TikTok)", "price": null, "asOf": null, "source": "" }
+  }
+}
