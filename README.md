@@ -11,6 +11,7 @@ contracts/            Solidity (Hardhat)
 scripts/              deploy, dev price feeder, liquidation keeper
 test/                 unit, Pyth integration, and randomized solvency-invariant tests
 frontend/             React + Vite + ethers trading UI
+hl-app/               front end for stock and pre-IPO perps on Hyperliquid (earns builder fees, no liquidity needed)
 ```
 
 ## What you can do
