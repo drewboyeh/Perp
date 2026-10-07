@@ -66,6 +66,20 @@ export const metaAndAssetCtxs = (dex: string) =>
 export const clearinghouseState = (user: string, dex: string) =>
   info<ClearinghouseState>({ type: "clearinghouseState", user, dex });
 
+export type Interval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+
+export interface Candle {
+  t: number; // open time, ms
+  o: string;
+  h: string;
+  l: string;
+  c: string;
+  v: string;
+}
+
+export const candleSnapshot = (coin: string, interval: Interval, startTime: number, endTime = Date.now()) =>
+  info<Candle[]>({ type: "candleSnapshot", req: { coin, interval, startTime, endTime } });
+
 /** Approved max builder fee for `user` and `builder`, in tenths of a basis point (0 if none). */
 export const maxBuilderFee = (user: string, builder: string) =>
   info<number>({ type: "maxBuilderFee", user, builder });

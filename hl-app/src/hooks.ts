@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Wallet } from "ethers";
 import { DEXS } from "./config";
 import { clearinghouseState, type ClearinghouseState } from "./hl/api";
 import { loadMarkets, type Market } from "./hl/markets";
 import type { Eip1193 } from "./hl/signing";
+import { approveAgent, approveBuilderFee, builderFeeApproved, forgetAgent, loadAgent } from "./hl/trading";
 
 declare global {
   interface Window {
@@ -74,4 +76,45 @@ export function useAccount(user?: string) {
   );
 }
 
+/** Whether this browser can trade for `user`, and the one-time setup that makes it so. */
+export function useTrading(user?: string, provider?: Eip1193) {
+  const [agent, setAgent] = useState<Wallet | null>(null);
+  const [feeOk, setFeeOk] = useState<boolean>();
+  useEffect(() => {
+    setAgent(user ? loadAgent(user) : null);
+    setFeeOk(undefined);
+    if (user) builderFeeApproved(user).then(setFeeOk, () => setFeeOk(false));
+  }, [user]);
+
+  const enable = useCallback(async () => {
+    if (!user || !provider) throw new Error("Connect a wallet first.");
+    if (!feeOk) {
+      await approveBuilderFee(provider, user);
+      setFeeOk(true);
+    }
+    if (!agent) setAgent(await approveAgent(provider, user));
+  }, [user, provider, feeOk, agent]);
+
+  /** Runs `fn` with the trading key; resets the key if Hyperliquid no longer recognizes it. */
+  const withAgent = useCallback(
+    async <T,>(fn: (agent: Wallet) => Promise<T>): Promise<T> => {
+      if (!agent || !user) throw new Error("Set up trading first.");
+      try {
+        return await fn(agent);
+      } catch (e) {
+        if (/does not exist/i.test(e instanceof Error ? e.message : String(e))) {
+          forgetAgent(user);
+          setAgent(null);
+          throw new Error("This browser's trading key is no longer approved. Set up trading again.");
+        }
+        throw e;
+      }
+    },
+    [agent, user],
+  );
+
+  return { ready: !!agent && feeOk === true, checking: !!user && feeOk === undefined, enable, withAgent };
+}
+
+export type Trading = ReturnType<typeof useTrading>;
 export type { Market };

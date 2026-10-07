@@ -2,9 +2,13 @@
 
 A branded front end for trading US stock and pre-IPO perpetuals that already exist on Hyperliquid's builder-deployed (HIP-3) markets, such as Trade.xyz. You hold no liquidity, run no oracle and take no side of any trade: orders go to Hyperliquid's order books, and every order carries your **builder code**, so Hyperliquid pays your app fee to your address.
 
+## The screen
+
+The whole page is the chart. The top bar picks the market (Stocks and Pre-IPO, searchable), the timeframe (5m, 1H, 1D, 1W) and candles or line. At the bottom there are two buttons: **Buy** (profit if it goes up) and **Sell** (profit if it goes down). Each opens a short sheet: amount, leverage, and a plain-language line saying how far the price can move before the amount is lost. An open trade in the current market shows above the buttons with its profit and a Close button; the account button at the top right lists every open trade.
+
 ## How it works
 
-- **Markets:** read from Hyperliquid's public `/info` API for the dexs in `VITE_DEXS` (default `xyz`). Tickers in `VITE_PRE_IPO` appear under the Pre-IPO tab, everything else under Stocks.
+- **Markets and charts:** read from Hyperliquid's public `/info` API (`metaAndAssetCtxs`, `candleSnapshot`) for the dexs in `VITE_DEXS` (default `xyz`). Tickers in `VITE_PRE_IPO` are grouped under Pre-IPO and marked in amber, everything else under Stocks.
 - **One-time setup per user, two wallet signatures:**
   1. approve your builder fee (`approveBuilderFee`), at most 0.1% on perps;
   2. approve a trading key (`approveAgent`) that the app generates and keeps in the browser. It signs orders without wallet pop-ups and can never withdraw.
